@@ -1,0 +1,6 @@
+cradle:
+  cabal:
+    - path: "."
+      component: "lib:mcp-hls"
+    - path: "./test"
+      component: "mcp-hls:test:hls-integration-tests"

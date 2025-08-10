@@ -54,6 +54,42 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
+library
+    import:           warnings
+    exposed-modules:  MCP.Types
+                    , MCP.Protocol
+                    , MCP.Server
+                    , MCP.Resources
+                    , MCP.Tools.HLS
+                    , MCP.Tools.Documentation
+                    , MCP.Tools.Diagnostics
+                    , HLS.Client
+                    , HLS.Process
+                    , HLS.Config
+                    , Utils.Logging
+                    , Utils.FileSystem
+    build-depends:    base
+                    , aeson
+                    , text
+                    , bytestring
+                    , process
+                    , typed-process
+                    , directory
+                    , filepath
+                    , unix
+                    , lsp
+                    , lsp-types
+                    , containers
+                    , mtl
+                    , transformers
+                    , stm
+                    , async
+                    , time
+                    , temporary
+                    , regex-posix
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
 executable mcp-hls
     -- Import common warning flags.
     import:           warnings
@@ -68,10 +104,40 @@ executable mcp-hls
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    base ^>=4.19.1.0
+    build-depends:    base
+                    , mcp-hls
 
     -- Directories containing source files.
     hs-source-dirs:   app
 
     -- Base language which the package is written in.
+    default-language: Haskell2010
+
+test-suite hls-integration-tests
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:    HLS.IntegrationSpec
+                    , HLS.LSPSpec
+                    , HLS.CommandSpec
+                    , MCP.ToolsSpec
+                    , Test.Utils
+                    , Test.Fixtures
+    build-depends:    base
+                    , mcp-hls
+                    , hspec >= 2.7
+                    , hspec-discover
+                    , process
+                    , aeson
+                    , text
+                    , bytestring
+                    , directory
+                    , filepath
+                    , temporary
+                    , async
+                    , stm
+                    , stm-containers
+                    , list-t
+                    , time
+    hs-source-dirs:   test
     default-language: Haskell2010
