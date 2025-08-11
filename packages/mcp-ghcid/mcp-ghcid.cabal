@@ -1,0 +1,124 @@
+cabal-version:      3.0
+name:               mcp-ghcid
+version:            0.1.0.0
+synopsis:           MCP server for ghcid integration
+description:        
+  Model Context Protocol (MCP) server that provides integration with 
+  ghcid (GHCi daemon), exposing ghcid compilation monitoring and 
+  error reporting capabilities through the MCP protocol for use 
+  with AI assistants and development tools.
+
+license:            MIT
+license-file:       LICENSE
+author:             o1lo01ol1o
+maintainer:         tim.pierson@gmail.com
+category:           Development
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+
+common warnings
+    ghc-options: -Wall
+
+library
+    import:           warnings
+    exposed-modules:  
+        -- GHCID-specific modules
+        GHCID.Client
+      , GHCID.Output
+      , GHCID.Config
+      , GHCID.Filter
+      , GHCID.ProcessRegistry
+      , GHCID.ResourceManager
+      , GHCID.Signals
+      , GHCID.Metrics
+      
+        -- MCP Tools for GHCID
+      , MCP.Tools.GHCID
+      , MCP.Server.GHCID
+      , MCP.Types.GHCID
+      , MCP.Router.GHCID
+    
+    build-depends:    
+        base >= 4.16
+      , mcp-common
+      , aeson >= 2.0
+      , text >= 1.2
+      , bytestring >= 0.10
+      , process >= 1.6
+      , typed-process >= 0.2
+      , directory >= 1.3
+      , filepath >= 1.4
+      , unix >= 2.7
+      , containers >= 0.6
+      , mtl >= 2.2
+      , transformers >= 0.5
+      , stm >= 2.5
+      , async >= 2.2
+      , time >= 1.9
+      , temporary >= 1.3
+      , regex-posix >= 0.96
+      , regex-tdfa >= 1.3
+      , ansi-terminal >= 0.11
+      , attoparsec >= 0.14
+      , stm-containers >= 1.2
+      , list-t >= 1.0
+      , hashable >= 1.3
+    
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+executable mcp-ghcid
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:    
+        base >= 4.16
+      , mcp-ghcid
+      , mcp-common
+      , directory >= 1.3
+      , text >= 1.2
+    hs-source-dirs:   app
+    default-language: Haskell2010
+
+test-suite ghcid-tests
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:    
+        GHCID.ClientSpec
+      , GHCID.FilterSpec
+      , GHCID.OutputSpec
+      , GHCID.ProcessRegistrySpec
+      , MCP.GHCIDToolsSpec
+      , MCP.Types.GHCIDSpec
+      , MCP.Router.GHCIDSpec
+      , GHCID.ResourceLeakSpec
+      , GHCID.ConcurrencySpec
+      , Test.Utils
+    
+    build-depends:    
+        base >= 4.16
+      , mcp-ghcid
+      , mcp-common
+      , hspec >= 2.7
+      , hspec-discover
+      , process >= 1.6
+      , typed-process >= 0.2
+      , aeson >= 2.0
+      , text >= 1.2
+      , bytestring >= 0.10
+      , directory >= 1.3
+      , filepath >= 1.4
+      , temporary >= 1.3
+      , containers >= 0.6
+      , async >= 2.2
+      , stm >= 2.5
+      , time >= 1.9
+      , unix >= 2.7
+      , regex-posix >= 0.96
+      , regex-tdfa >= 1.3
+      , stm-containers >= 1.2
+      , list-t >= 1.0
+      , hashable >= 1.3
+    
+    hs-source-dirs:   test
+    default-language: Haskell2010
