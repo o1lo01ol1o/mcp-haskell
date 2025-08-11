@@ -75,10 +75,12 @@ handleInitialize _initReq reqId = createSuccessResponse initResponse reqId
       ]
 
     serverCapabilities =
-      let caps = ServerCapabilities Nothing Nothing Nothing Nothing
-      in caps { resources = Just (ResourcesCapability (Just True) (Just True))
-              , tools = Just (ToolsCapability (Just True))
-              }
+      ServerCapabilities 
+        { logging = Nothing
+        , prompts = Nothing  
+        , resources = Just (ResourcesCapability (Just True) (Just True))
+        , tools = Just (ToolsCapability (Just True))
+        }
 
     serverInfo = object
       [ "name" .= ("mcp-hls" :: Text)

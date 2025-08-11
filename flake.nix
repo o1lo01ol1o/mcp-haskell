@@ -16,10 +16,48 @@
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
     in
     {
-      packages = forEachSystem (system: {
-        devenv-up = self.devShells.${system}.default.config.procfileScript;
-        devenv-test = self.devShells.${system}.default.config.test;
-      });
+      packages = forEachSystem (system: 
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
+          
+        in {
+          devenv-up = self.devShells.${system}.default.config.procfileScript;
+          devenv-test = self.devShells.${system}.default.config.test;
+        });
+      
+      # Library functions for creating mcp-ghcid with custom ghcid
+      lib = {
+        # Main function to create mcp-ghcid with a provided ghcid derivation
+        # Usage: mkMcpGhcid { system = "x86_64-linux"; ghcid = myGhcidDerivation; }
+        mkMcpGhcid = { system, ghcid }:
+          let
+            pkgs = import nixpkgs {
+              inherit system;  
+              config.allowUnfree = true;
+            };
+            
+            # Build mcp-common first  
+            mcp-common = pkgs.haskell.packages.ghc948.callCabal2nix "mcp-common" (./packages/mcp-common) {};
+            
+            # Build the Haskell package with mcp-common dependency
+            haskellPkg = pkgs.haskell.packages.ghc948.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) {
+              inherit mcp-common;
+            };
+            
+            # Create static executable
+            staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
+            
+          in pkgs.runCommand "mcp-ghcid-with-ghcid" {
+            buildInputs = [ pkgs.makeWrapper ];
+          } ''
+            mkdir -p $out/bin
+            makeWrapper ${staticPkg}/bin/mcp-ghcid $out/bin/mcp-ghcid \
+              --prefix PATH : ${ghcid}/bin
+          '';
+      };
 
       devShells = forEachSystem
         (system:
