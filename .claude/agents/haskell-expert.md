@@ -1,0 +1,1 @@
+/nix/store/zlvdclcbi2ch2sx5lszz15l22jabxrjq-claude-agents-haskell-expert.md

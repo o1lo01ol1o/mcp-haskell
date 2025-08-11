@@ -1,0 +1,21 @@
+cradle:
+  cabal:
+    # Main library component
+    - path: "./Demo"
+      component: "lib:demo-project"
+    
+    # All source files in root
+    - path: "./"
+      component: "lib:demo-project"
+    
+    # Test executable
+    - path: "./test"
+      component: "exe:demo-project-test"
+      
+    # Test suite  
+    - path: "./test"
+      component: "test:demo-project-tests"
+    
+    # Benchmark suite
+    - path: "./bench"
+      component: "benchmark:demo-project-bench"

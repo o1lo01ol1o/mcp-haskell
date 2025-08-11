@@ -1,3 +1,6 @@
 [submodule "vscode-haskell"]
 	path = vscode-haskell
 	url = https://github.com/haskell/vscode-haskell.git
+[submodule "haskell-language-server"]
+	path = haskell-language-server
+	url = https://github.com/haskell/haskell-language-server.git

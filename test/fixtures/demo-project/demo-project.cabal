@@ -1,0 +1,173 @@
+cabal-version: 3.0
+name: demo-project
+version: 1.0.0.0
+synopsis: Demo project for comprehensive HLS tool testing
+description: 
+    A comprehensive Haskell project designed specifically for testing
+    all HLS (Haskell Language Server) tools and MCP (Model Context Protocol)
+    integration. Contains specialized modules for testing hover info,
+    goto definition, find references, diagnostics, code actions,
+    formatting, completions, code lenses, evaluation, and more.
+category: Development
+build-type: Simple
+author: HLS Testing Suite
+maintainer: test@example.com
+license: MIT
+
+-- Extra files for comprehensive testing
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+-- Common configuration
+common warnings
+    ghc-options: -Wall
+                -Wcompat
+                -Widentities
+                -Wincomplete-record-updates
+                -Wincomplete-uni-patterns
+                -Wmissing-export-lists
+                -Wmissing-home-modules
+                -Wpartial-fields
+                -Wredundant-constraints
+
+library
+    import: warnings
+    exposed-modules:
+        Demo.Basic
+        Demo.Diagnostics
+        Demo.Actions  
+        Demo.Imports
+        Demo.Advanced
+        Demo.Completions
+        Demo.Formatting
+        Demo.CodeLens
+        Demo.Evaluation
+
+    -- Comprehensive dependencies for testing all HLS features
+    build-depends:
+        base >= 4.7 && < 5,
+        text >= 1.2 && < 3,
+        bytestring >= 0.10 && < 0.13,
+        containers >= 0.6 && < 0.8,
+        unordered-containers >= 0.2 && < 0.3,
+        vector >= 0.12 && < 0.14,
+        aeson >= 1.4 && < 2.3,
+        time >= 1.9 && < 1.14,
+        mtl >= 2.2 && < 2.4,
+        transformers >= 0.5 && < 0.7,
+        template-haskell >= 2.16 && < 2.22,
+        directory >= 1.3 && < 1.4,
+        filepath >= 1.4 && < 1.6,
+        process >= 1.6 && < 1.7,
+        random >= 1.1 && < 1.3,
+        stm >= 2.5 && < 2.6,
+        async >= 2.2 && < 2.3,
+        hashable >= 1.3 && < 1.5,
+        deepseq >= 1.4 && < 1.6,
+        binary >= 0.8 && < 0.9,
+        scientific >= 0.3 && < 0.4,
+        attoparsec >= 0.13 && < 0.15,
+        regex-tdfa >= 1.3 && < 1.4,
+        uuid >= 1.3 && < 1.4
+
+    hs-source-dirs: .
+    default-language: Haskell2010
+    
+    -- Extensions commonly used in modern Haskell
+    default-extensions:
+        OverloadedStrings
+        LambdaCase
+        MultiWayIf
+        TupleSections
+        RecordWildCards
+        NamedFieldPuns
+        DeriveFunctor
+        DeriveFoldable
+        DeriveTraversable
+        DeriveGeneric
+        GeneralizedNewtypeDeriving
+        StandaloneDeriving
+        FlexibleContexts
+        FlexibleInstances
+        TypeApplications
+        ScopedTypeVariables
+        AllowAmbiguousTypes
+        
+    -- Additional extensions for advanced testing
+    other-extensions:
+        GADTs
+        DataKinds
+        KindSignatures
+        TypeFamilies
+        TemplateHaskell
+        QuasiQuotes
+        RankNTypes
+        ExistentialQuantification
+        FunctionalDependencies
+        MultiParamTypeClasses
+        UndecidableInstances
+        IncoherentInstances
+        OverlappingInstances
+        TypeOperators
+        PolyKinds
+        ConstraintKinds
+        DuplicateRecordFields
+        PatternSynonyms
+        ViewPatterns
+        BangPatterns
+        UnboxedTuples
+        MagicHash
+        CPP
+
+-- Test executable for integration testing
+executable demo-project-test
+    import: warnings
+    main-is: TestMain.hs
+    build-depends:
+        base,
+        demo-project,
+        text,
+        containers
+
+    hs-source-dirs: test
+    default-language: Haskell2010
+    ghc-options: -threaded -rtsopts -with-rtsopts=-N
+
+-- Benchmark suite for performance testing
+benchmark demo-project-bench
+    import: warnings
+    type: exitcode-stdio-1.0
+    main-is: BenchMain.hs
+    build-depends:
+        base,
+        demo-project,
+        criterion >= 1.5 && < 1.7,
+        text,
+        containers
+        
+    hs-source-dirs: bench
+    default-language: Haskell2010
+    ghc-options: -threaded -rtsopts -with-rtsopts=-N -O2
+
+-- Test suite for unit testing
+test-suite demo-project-tests
+    import: warnings
+    type: exitcode-stdio-1.0
+    main-is: Spec.hs
+    other-modules:
+        Demo.BasicSpec
+        Demo.DiagnosticsSpec
+        Demo.ActionsSpec
+        
+    build-depends:
+        base,
+        demo-project,
+        hspec >= 2.7 && < 2.12,
+        QuickCheck >= 2.14 && < 2.16,
+        text,
+        containers
+        
+    hs-source-dirs: test
+    default-language: Haskell2010
+    ghc-options: -threaded -rtsopts -with-rtsopts=-N

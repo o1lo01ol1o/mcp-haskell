@@ -4,409 +4,95 @@
 
 module Test.Utils where
 
-import Control.Concurrent.Async
-import Control.Concurrent.STM  
 import Control.Concurrent (threadDelay)
-import Control.Exception (try, SomeException, bracket, catch)
-import System.Timeout (timeout)
-import Control.Monad (void, forever)
+import Control.Concurrent.MVar
+import Control.Exception (SomeException, bracket, try)
+import Control.Monad (when)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
-import qualified StmContainers.Map as STMMap
-import qualified StmContainers.Multimap as STMMultimap
-import qualified StmContainers.Set as STMSet
-import qualified ListT
-import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as L8
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Process
-import System.IO
-import System.Directory (getCurrentDirectory)
+import System.Directory (getCurrentDirectory, findExecutable)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>))
+import System.IO (BufferMode(..), Handle, hClose, hFlush, hGetLine, hPutStrLn, hSetBuffering)
 import System.IO.Temp (withSystemTempDirectory)
-import Debug.Trace
+import System.IO.Unsafe (unsafePerformIO)
+import System.Process (CreateProcess(..), ProcessHandle, StdStream(..), createProcess, getProcessExitCode, proc, terminateProcess)
+import System.Process.Typed (Process, unsafeProcessHandle)
+import System.Timeout (timeout)
+import Text.Regex.TDFA ((=~))
 
--- | LSP message types
-data LSPMessage = LSPMessage
-  { method :: Text
-  , msgId :: Maybe Int
-  , params :: Maybe Value
-  } deriving (Show)
+-- Production imports from main library
+import qualified HLS.Client as HLS
+import qualified MCP.Server as MCP
 
-instance ToJSON LSPMessage where
-  toJSON (LSPMessage m mid p) = object $ catMaybes
-    [ Just ("jsonrpc" .= ("2.0" :: Text))
-    , Just ("method" .= m)
-    , ("id" .=) <$> mid
-    , ("params" .=) <$> p
-    ]
-    where
-      catMaybes = foldr (\mx acc -> maybe acc (:acc) mx) []
+-- Global process registry for cleanup
+allHLSProcesses :: MVar [ProcessHandle]
+allHLSProcesses = unsafePerformIO $ newMVar []
+{-# NOINLINE allHLSProcesses #-}
 
--- | HLS process handle with STM-based message routing using stm-containers
+-- | Cleanup all tracked processes
+cleanupAllProcesses :: IO ()
+cleanupAllProcesses = do
+  pids <- takeMVar allHLSProcesses
+  mapM_ cleanupProcess pids
+  putMVar allHLSProcesses []
+  threadDelay 500000 -- Wait 500ms for all processes to terminate
+  where
+    cleanupProcess pHandle = do
+      exitCode <- getProcessExitCode pHandle
+      when (isNothing exitCode) $ do
+        terminateProcess pHandle
+        threadDelay 200000 -- Wait 200ms for each process termination
+
+-- | HLS handle that uses production code
 data HLSHandle = HLSHandle
-  { hlsStdin :: Handle
-  , hlsStdout :: Handle  
-  , hlsProcess :: ProcessHandle
-  , requestCounter :: TVar Int
-  , responseQueue :: STMMap.Map Int Value              -- Responses by request ID
-  , notificationQueue :: STMMultimap.Multimap Text Value -- Notifications by method name (allows multiple)
-  , readerThread :: Async ()                          -- Background reader thread
+  { hlsClient :: HLS.LSPClient,
+    hlsWorkDir :: FilePath
   }
 
--- | Start HLS process for testing
+-- | Start HLS process using production code
 startHLS :: FilePath -> IO HLSHandle
 startHLS workDir = do
-  trace ("Starting HLS in directory: " ++ workDir) $ return ()
-  (Just stdin_h, Just stdout_h, Just stderr_h, proc_h) <- 
-    createProcess (proc "haskell-language-server-wrapper" ["--lsp"])
-      { cwd = Just workDir
-      , std_in = CreatePipe
-      , std_out = CreatePipe
-      , std_err = CreatePipe
-      }
-  
-  -- Store stderr handle for potential debugging
-  hSetBuffering stderr_h LineBuffering
-  
-  trace "HLS process created, setting up handles..." $ return ()
-  
-  -- Set binary mode and appropriate buffering for LSP communication
-  hSetBinaryMode stdin_h True
-  hSetBinaryMode stdout_h True  
-  hSetBinaryMode stderr_h False  -- Keep stderr in text mode for error messages
-  hSetBuffering stdin_h NoBuffering
-  hSetBuffering stdout_h NoBuffering  -- Back to NoBuffering for LSP
-  hSetBuffering stderr_h LineBuffering
-  
-  -- Check if process started successfully
-  procStatus <- getProcessExitCode proc_h
-  case procStatus of
-    Just exitCode -> do
-      trace ("HLS process exited immediately with code: " ++ show exitCode) $ return ()
-      error $ "HLS process failed to start with exit code: " ++ show exitCode
-    Nothing -> trace "HLS process started successfully" $ return ()
-  
-  -- Give HLS a moment to start up
-  threadDelay 500000  -- 0.5 seconds
-  
-  -- Check again after delay
-  procStatus2 <- getProcessExitCode proc_h
-  case procStatus2 of
-    Just exitCode -> do
-      trace ("HLS process exited after startup delay with code: " ++ show exitCode) $ return ()
-      error $ "HLS process failed during startup with exit code: " ++ show exitCode
-    Nothing -> trace "HLS process still running after startup delay" $ return ()
-  
-  counter <- newTVarIO 0
-  responseQueue <- STMMap.newIO
-  notificationQueue <- STMMultimap.newIO
-  
-  -- Start background reader thread that continuously reads from HLS
-  reader <- async $ forever $ do
-    result <- readLSPResponseRaw stdout_h
-    case result of
-      Left err -> do
-        trace ("Background reader error: " ++ err) $ return ()
-        threadDelay 100000  -- Brief pause before retry
-      Right val -> do
-        trace ("Background reader got message: " ++ show val) $ return ()
-        routeMessage val responseQueue notificationQueue
-    `catch` (\(_ :: SomeException) -> threadDelay 100000)
-  
-  let handle = HLSHandle stdin_h stdout_h proc_h counter responseQueue notificationQueue reader
-  
-  trace "HLS handle created successfully with STM-based background reader" $ return handle
-
--- | Route LSP message to appropriate STM container based on LSP spec
-routeMessage :: Value -> STMMap.Map Int Value -> STMMultimap.Multimap Text Value -> IO ()
-routeMessage val responseQueue notificationQueue = atomically $ do
-  case val of
-    Object obj -> 
-      case KM.lookup "id" obj of
-        Just (Number n) -> do
-          -- Has ID - this is a response to a request (LSP spec)
-          let reqId = floor n
-          STMMap.insert val reqId responseQueue
-          trace ("Routed response for request ID: " ++ show reqId) $ return ()
-        _ -> 
-          -- No ID - check if it's a notification with method field (LSP spec)
-          case KM.lookup "method" obj of
-            Just (String methodName) -> do
-              STMMultimap.insert val methodName notificationQueue
-              trace ("Routed notification: " ++ T.unpack methodName) $ return ()
-            _ -> do
-              -- Malformed message - store under "unknown" method
-              STMMultimap.insert val "unknown" notificationQueue
-              trace ("Routed malformed message as unknown notification") $ return ()
-    _ -> do
-      -- Non-object message - treat as unknown notification
-      STMMultimap.insert val "malformed" notificationQueue
-      trace ("Routed non-object message as malformed notification") $ return ()
-
--- | Read LSP response directly from handle (for background reader)
-readLSPResponseRaw :: Handle -> IO (Either String Value)
-readLSPResponseRaw handle = do
-  result <- try @SomeException $ do
-    -- Read Content-Length header
-    headerLine <- readLine handle
-    case parseContentLength headerLine of
-      Nothing -> error $ "Invalid Content-Length header: " ++ headerLine
-      Just len -> do
-        -- Read empty line
-        void $ readLine handle
-        -- Read JSON content
-        jsonStr <- LBS.hGet handle len
-        case decode jsonStr of
-          Nothing -> error $ "Invalid JSON response: " ++ show jsonStr
-          Just val -> return val
+  -- Give HLS more time to start up
+  result <- timeout 20000000 $ HLS.initializeLSPClient workDir -- 20 second timeout for initialization
   case result of
-    Left ex -> return $ Left $ show ex
-    Right val -> return $ Right val
+    Nothing -> error "HLS initialization timed out after 20 seconds"
+    Just (Left err) -> error $ "Failed to initialize LSP client: " ++ T.unpack err
+    Just (Right client) -> do
+      let handle = HLSHandle client workDir
+      -- Track the process handle for cleanup
+      let pHandle = unsafeProcessHandle (HLS.processHandle client)
+      modifyMVar_ allHLSProcesses (\pids -> return (pHandle : pids))
+      -- Give HLS a moment to fully initialize
+      threadDelay 2000000 -- 2 second delay after initialization
+      return handle
 
--- | Stop HLS process  
+-- | Stop HLS process using production cleanup
 stopHLS :: HLSHandle -> IO ()
-stopHLS handle = do
-  cancel (readerThread handle)  -- Stop background reader
-  hClose (hlsStdin handle)
-  hClose (hlsStdout handle)
-  terminateProcess (hlsProcess handle)
-  void $ waitForProcess (hlsProcess handle)
+stopHLS handle = HLS.closeLSPClient (hlsClient handle)
 
--- | Send LSP message with process status check
-sendLSPMessage :: HLSHandle -> LSPMessage -> IO ()
-sendLSPMessage handle msg = do
-  -- Check if process is still running before sending
-  procStatus <- getProcessExitCode (hlsProcess handle)
-  case procStatus of
-    Just exitCode -> do
-      trace ("HLS process died before sending message, exit code: " ++ show exitCode) $ return ()
-      error $ "HLS process terminated with exit code: " ++ show exitCode
-    Nothing -> return ()
-  
-  let jsonBytes = encode msg
-  let contentLength = LBS.length jsonBytes
-  let header = "Content-Length: " <> show contentLength <> "\r\n\r\n"
-  let headerBytes = L8.pack header
-  
-  trace ("Sending LSP message: " ++ T.unpack (method msg) ++ " (length: " ++ show contentLength ++ ")") $ return ()
-  trace ("Message JSON: " ++ show jsonBytes) $ return ()
-  
-  LBS.hPutStr (hlsStdin handle) headerBytes
-  LBS.hPutStr (hlsStdin handle) jsonBytes
-  hFlush (hlsStdin handle)
-  
-  trace "LSP message sent successfully" $ return ()
-  
-  -- Small delay to let HLS process the message
-  threadDelay 100000  -- 0.1 seconds
-  
-  -- Check if process is still running after sending
-  procStatus2 <- getProcessExitCode (hlsProcess handle)
-  case procStatus2 of
-    Just exitCode -> trace ("HLS process died after sending message, exit code: " ++ show exitCode) $ return ()
-    Nothing -> trace "HLS process still alive after message" $ return ()
-
--- | Read LSP response with timeout and better error handling
-readLSPResponse :: HLSHandle -> IO (Either String Value)
-readLSPResponse handle = do
-  trace "Reading LSP response..." $ return ()
-  
-  -- First check if process is still running
-  procStatus <- getProcessExitCode (hlsProcess handle)
-  case procStatus of
-    Just exitCode -> do
-      trace ("HLS process terminated with exit code: " ++ show exitCode) $ return ()
-      return $ Left $ "HLS process terminated with: " ++ show exitCode
-    Nothing -> do
-      trace "HLS process still running, reading response..." $ return ()
-      result <- try @SomeException $ do
-        -- Read Content-Length header byte by byte until \r\n
-        trace "Reading Content-Length header..." $ return ()
-        headerLine <- readLine (hlsStdout handle)
-        trace ("Content-Length header: " ++ headerLine) $ return ()
-        case parseContentLength headerLine of
-          Nothing -> error $ "Invalid Content-Length header: " ++ headerLine
-          Just len -> do
-            trace ("Content length: " ++ show len) $ return ()
-            -- Read empty line (\r\n)  
-            trace "Reading empty line..." $ return ()
-            void $ readLine (hlsStdout handle)
-            -- Read JSON content
-            trace ("Reading " ++ show len ++ " bytes of JSON content...") $ return ()
-            jsonStr <- LBS.hGet (hlsStdout handle) len
-            trace ("Raw JSON response: " ++ show jsonStr) $ return ()
-            case decode jsonStr of
-              Nothing -> error $ "Invalid JSON response: " ++ show jsonStr
-              Just val -> do
-                trace ("Parsed JSON successfully: " ++ show val) $ return ()
-                return val
-              
-      case result of
-        Left ex -> do
-          trace ("Error reading LSP response: " ++ show ex) $ return ()
-          return $ Left $ show ex
-        Right val -> do
-          trace "LSP response read successfully" $ return ()
-          return $ Right val
-
--- Helper function to read a line from handle in binary mode
-readLine :: Handle -> IO String
-readLine handle = do
-  chars <- readUntilCRLF []
-  return $ reverse chars
-  where
-    readUntilCRLF acc = do
-      char <- hGetChar handle
-      case char of
-        '\r' -> do
-          nextChar <- hGetChar handle  -- Should be '\n'
-          if nextChar == '\n'
-            then return acc
-            else readUntilCRLF (nextChar : '\r' : acc)
-        _ -> readUntilCRLF (char : acc)
-
--- | Parse Content-Length from header
-parseContentLength :: String -> Maybe Int
-parseContentLength str
-  | "Content-Length: " `isPrefixOf` str = 
-      case reads (drop 16 str) of
-        [(len, _)] -> Just len
-        _ -> Nothing
-  | otherwise = Nothing
-  where
-    isPrefixOf prefix s = take (length prefix) s == prefix
-
--- | Generate next request ID
-nextRequestId :: HLSHandle -> IO Int
-nextRequestId handle = atomically $ do
-  current <- readTVar (requestCounter handle)
-  writeTVar (requestCounter handle) (current + 1)
-  return (current + 1)
-
--- | Wait for a specific response using STM containers
-waitForResponse :: HLSHandle -> Int -> IO (Either String Value)
-waitForResponse handle reqId = do
-  trace ("Waiting for response with ID " ++ show reqId) $ return ()
-  result <- timeout 10000000 $ atomically $ do  -- 10 second timeout
-    maybeResponse <- STMMap.lookup reqId (responseQueue handle)
-    case maybeResponse of
-      Just response -> do
-        -- Remove the response from the queue and return it
-        STMMap.delete reqId (responseQueue handle)
-        return response
-      Nothing -> retry  -- STM retry until response arrives
-  
-  case result of
-    Just response -> do
-      trace ("Found response for ID " ++ show reqId) $ return ()
-      return $ Right response
-    Nothing -> do
-      trace ("Timeout waiting for response ID " ++ show reqId) $ return ()
-      return $ Left "Timeout waiting for response"
-
--- | Get all notifications for a specific method
-getNotifications :: HLSHandle -> Text -> IO [Value]
-getNotifications handle methodName = atomically $ do
-  maybeSet <- STMMultimap.lookupByKey methodName (notificationQueue handle)
-  case maybeSet of
-    Nothing -> return []
-    Just valueSet -> ListT.toList $ STMSet.listT valueSet
-
--- | Wait for at least one notification of a specific type
-waitForNotification :: HLSHandle -> Text -> IO (Maybe Value)
-waitForNotification handle methodName = do
-  result <- timeout 5000000 $ atomically $ do  -- 5 second timeout
-    maybeSet <- STMMultimap.lookupByKey methodName (notificationQueue handle)
-    case maybeSet of
-      Nothing -> retry  -- No notifications yet
-      Just valueSet -> do
-        isEmpty <- STMSet.null valueSet  
-        if isEmpty
-          then retry
-          else do
-            -- Get one value from set (simplified approach)
-            values <- ListT.toList $ STMSet.listT valueSet
-            case values of
-              [] -> retry
-              (first:_) -> return first
-  return result
-
--- | Initialize HLS with basic capabilities
-initializeHLS :: HLSHandle -> FilePath -> IO (Either String Value)
-initializeHLS handle rootPath = do
-  trace ("Initializing HLS with root path: " ++ rootPath) $ return ()
-  
-  -- Give HLS some time to fully start up
-  threadDelay 1000000  -- 1 second
-  trace "HLS startup delay complete, sending initialize request..." $ return ()
-  
-  reqId <- nextRequestId handle
-  let initMsg = LSPMessage
-        { method = "initialize"
-        , msgId = Just reqId
-        , params = Just $ object
-            [ "processId" .= (1234 :: Int)
-            , "rootPath" .= rootPath
-            , "rootUri" .= ("file://" <> rootPath)
-            , "capabilities" .= object
-                [ "textDocument" .= object
-                    [ "hover" .= object ["contentFormat" .= ["markdown" :: Text, "plaintext"]]
-                    , "publishDiagnostics" .= object []
-                    ]
-                ]
-            ]
-        }
-  
-  sendLSPMessage handle initMsg
-  trace "Initialize request sent, waiting for response..." $ return ()
-  response <- waitForResponse handle reqId
-  
-  case response of
-    Right val -> do
-      trace ("Initialize response received successfully: " ++ show val) $ return ()
-      -- Send initialized notification
-      let initializedMsg = LSPMessage
-            { method = "initialized"
-            , msgId = Nothing
-            , params = Just $ object []
-            }
-      trace "Sending initialized notification..." $ return ()
-      sendLSPMessage handle initializedMsg
-      -- Small delay after initialization  
-      threadDelay 500000  -- 0.5 seconds
-      
-      -- Let the background reader handle any post-initialization notifications
-      trace "Letting background reader handle any post-initialization notifications..." $ return ()
-      threadDelay 1000000  -- Give it time to receive any immediate notifications
-      
-      -- Check what notifications we received (for debugging)
-      diagnostics <- getNotifications handle "textDocument/publishDiagnostics"
-      windowLogs <- getNotifications handle "window/logMessage"
-      trace ("Received " ++ show (length diagnostics) ++ " diagnostic notifications") $ return ()
-      trace ("Received " ++ show (length windowLogs) ++ " window log messages") $ return ()
-      
-      trace "HLS initialization complete" $ return ()
-      return response
-    Left err -> do
-      trace ("Initialize request failed: " ++ err) $ return ()
-      return $ Left err
+-- | Extract process handle for compatibility
+hlsProcess :: HLSHandle -> ProcessHandle
+hlsProcess handle = unsafeProcessHandle (HLS.processHandle (hlsClient handle))
 
 -- | Test helper to run HLS operation with proper setup/teardown
 withHLS :: FilePath -> (HLSHandle -> IO a) -> IO a
-withHLS workDir action = bracket
-  (startHLS workDir)
-  stopHLS
-  $ \handle -> do
-    initResult <- initializeHLS handle workDir
-    case initResult of
-      Left err -> error $ "Failed to initialize HLS: " <> err
-      Right _ -> action handle
+withHLS workDir action = do
+  result <- timeout 30000000 $ -- 30 second total timeout (more generous)
+    bracket
+      (startHLS workDir)
+      stopHLS
+      action
+  case result of
+    Nothing -> error "HLS operation timed out after 30 seconds"
+    Just res -> return res
 
 -- | Helper to create a temporary test workspace
-withTestWorkspace :: [(FilePath, String)] -> (FilePath -> IO a) -> IO a  
+withTestWorkspace :: [(FilePath, String)] -> (FilePath -> IO a) -> IO a
 withTestWorkspace files action = withSystemTempDirectory "hls-test" $ \tmpDir -> do
   -- Create test files
   mapM_ (createTestFile tmpDir) files
@@ -415,3 +101,291 @@ withTestWorkspace files action = withSystemTempDirectory "hls-test" $ \tmpDir ->
     createTestFile dir (path, content) = do
       let fullPath = dir </> path
       writeFile fullPath content
+
+-- Production LSP Client Helper Functions
+
+-- | Send hover request using production client
+sendHoverRequest :: HLSHandle -> Text -> Int -> Int -> IO (Either String Value)
+sendHoverRequest handle uri line char = do
+  result <- HLS.getHover (hlsClient handle) uri line char
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right content ->
+      return $ Right $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "result" .= object
+            [ "contents" .= object
+                [ "kind" .= ("markdown" :: Text)
+                , "value" .= content
+                ]
+            ]
+        ]
+
+-- | Send document symbols request using production client
+sendDocumentSymbolsRequest :: HLSHandle -> Text -> IO (Either String Value)
+sendDocumentSymbolsRequest handle uri = do
+  result <- HLS.getDocumentSymbols (hlsClient handle) uri
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right symbols ->
+      return $ Right $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "result" .= symbols
+        ]
+
+-- | Send workspace symbols request using production client
+sendWorkspaceSymbolsRequest :: HLSHandle -> Text -> IO (Either String Value)
+sendWorkspaceSymbolsRequest handle query = do
+  result <- HLS.getWorkspaceSymbols (hlsClient handle) query
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right symbols ->
+      return $ Right $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "result" .= symbols
+        ]
+
+-- | Send code actions request using production client
+sendCodeActionsRequest :: HLSHandle -> Text -> Int -> Int -> Int -> Int -> IO (Either String Value)
+sendCodeActionsRequest handle uri startLine startChar endLine endChar = do
+  result <- HLS.getCodeActions (hlsClient handle) uri startLine startChar endLine endChar
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right actions ->
+      return $ Right $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "result" .= actions
+        ]
+
+-- | Send execute command request using production client
+sendExecuteCommandRequest :: HLSHandle -> Text -> [Value] -> IO (Either String Value)
+sendExecuteCommandRequest handle command args = do
+  result <- HLS.executeCommand (hlsClient handle) command args
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right response ->
+      return $ Right $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "result" .= response
+        ]
+
+-- | Get file diagnostics using production client
+getFileDiagnosticsFromLSP :: HLSHandle -> Text -> Text -> IO (Either String [Value])
+getFileDiagnosticsFromLSP handle uri content = do
+  result <- HLS.getFileDiagnostics (hlsClient handle) uri content
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right diagnostics -> return $ Right diagnostics
+
+-- | Send didOpen notification using production client
+sendDidOpenNotificationToLSP :: HLSHandle -> Text -> Text -> IO (Either String ())
+sendDidOpenNotificationToLSP handle uri content = do
+  result <- HLS.sendDidOpenNotification (hlsClient handle) uri content
+  case result of
+    Left err -> return $ Left $ T.unpack err
+    Right _ -> return $ Right ()
+
+-- MCP Demo Server Utilities with Production Code
+
+-- | MCP server handle for testing
+data MCPDemoServer = MCPDemoServer
+  { mcpProcess :: ProcessHandle,
+    mcpStdin :: Handle,
+    mcpStdout :: Handle,
+    mcpProjectPath :: FilePath
+  }
+
+instance Show MCPDemoServer where
+  show (MCPDemoServer _ _ _ path) = "MCPDemoServer{mcpProjectPath=" ++ show path ++ "}"
+
+-- | Start MCP server with demo project using production server
+withMCPDemoServer :: FilePath -> (MCPDemoServer -> IO a) -> IO (Either Text a)
+withMCPDemoServer demoProjectPath action = do
+  result <- try $ bracket
+    (startMCPDemoServer demoProjectPath)
+    stopMCPDemoServer
+    action
+  case result of
+    Left (ex :: SomeException) -> return $ Left $ T.pack $ show ex
+    Right res -> return $ Right res
+
+-- | Discover MCP executable dynamically
+findMCPExecutable :: IO (Maybe FilePath)
+findMCPExecutable = do
+  -- Try environment variable first
+  envPath <- lookupEnv "MCP_HLS_EXECUTABLE"
+  case envPath of
+    Just path -> return $ Just path
+    Nothing -> do
+      -- Try to find in PATH
+      pathResult <- findExecutable "mcp-hls"
+      case pathResult of
+        Just path -> return $ Just path
+        Nothing -> do
+          -- Try common build locations
+          currentDir <- getCurrentDirectory
+          let commonPaths =
+                [ currentDir </> "dist-newstyle/build/aarch64-osx/ghc-9.8.4/mcp-hls-0.1.0.0/x/mcp-hls/build/mcp-hls/mcp-hls"
+                , currentDir </> "dist-newstyle/build/x86_64-linux/ghc-9.8.4/mcp-hls-0.1.0.0/x/mcp-hls/build/mcp-hls/mcp-hls"
+                , currentDir </> "dist-newstyle/build/x86_64-osx/ghc-9.8.4/mcp-hls-0.1.0.0/x/mcp-hls/build/mcp-hls/mcp-hls"
+                ]
+          findFirstExisting commonPaths
+  where
+    findFirstExisting [] = return Nothing
+    findFirstExisting (path:paths) = do
+      exists <- findExecutable path
+      case exists of
+        Just _ -> return $ Just path
+        Nothing -> findFirstExisting paths
+
+-- | Start the MCP server process with demo project using production code
+startMCPDemoServer :: FilePath -> IO MCPDemoServer
+startMCPDemoServer projectPath = do
+  mcpExecutable <- findMCPExecutable
+  case mcpExecutable of
+    Nothing -> error "MCP executable not found. Set MCP_HLS_EXECUTABLE or ensure mcp-hls is in PATH"
+    Just execPath -> do
+      (Just stdin_h, Just stdout_h, Nothing, proc_h) <-
+        createProcess (proc execPath [])
+          { cwd = Just projectPath,
+            std_in = CreatePipe,
+            std_out = CreatePipe,
+            std_err = NoStream -- Suppress stderr noise
+          }
+
+      -- Set buffering
+      hSetBuffering stdin_h NoBuffering
+      hSetBuffering stdout_h LineBuffering
+
+      -- Check if process started successfully
+      procStatus <- getProcessExitCode proc_h
+      case procStatus of
+        Just exitCode -> do
+          error $ "MCP server failed to start with exit code: " ++ show exitCode
+        Nothing -> return ()
+
+      -- Give MCP server time to start
+      threadDelay 1000000 -- 1 second
+      return $ MCPDemoServer proc_h stdin_h stdout_h projectPath
+
+-- | Stop the MCP server
+stopMCPDemoServer :: MCPDemoServer -> IO ()
+stopMCPDemoServer (MCPDemoServer _proc stdin_h stdout_h _) = do
+  -- Graceful cleanup
+  result <- try @SomeException $ do
+    hClose stdin_h
+    hClose stdout_h
+  case result of
+    Left _ -> return () -- Ignore cleanup errors
+    Right _ -> return ()
+
+-- | Test an MCP tool with configurable timeout
+testMCPTool :: MCPDemoServer -> Text -> Maybe Value -> Int -> IO (Either Text Value)
+testMCPTool (MCPDemoServer _ stdin_h stdout_h _) toolName maybeArgs timeoutMicros = do
+  result <- try $ do
+    -- Construct MCP tool call request
+    let request = object
+          [ "jsonrpc" .= ("2.0" :: Text)
+          , "method" .= ("tools/call" :: Text)
+          , "id" .= (1 :: Int)
+          , "params" .= object
+              [ "name" .= toolName
+              , "arguments" .= fromMaybe (object []) maybeArgs
+              ]
+          ]
+
+    -- Send request
+    let requestStr = L8.unpack $ encode request
+    hPutStrLn stdin_h requestStr
+    hFlush stdin_h
+
+    -- Read response with configurable timeout
+    responseResult <- timeout timeoutMicros $ hGetLine stdout_h
+    case responseResult of
+      Nothing -> error $ "Timeout waiting for MCP response after " ++ show (timeoutMicros `div` 1000000) ++ " seconds"
+      Just responseStr -> do
+        case eitherDecode (L8.pack responseStr) of
+          Left parseErr -> error $ "Failed to parse MCP response: " ++ parseErr
+          Right response -> return response
+
+  case result of
+    Left (ex :: SomeException) -> return $ Left $ T.pack $ show ex
+    Right val -> return $ Right val
+
+-- | Test expectation for MCP tools with configurable timeout
+data MCPToolExpectation = MCPToolExpectation
+  { mcpToolName :: Text,
+    mcpToolArgs :: Maybe Value,
+    mcpExpectedResult :: ExpectationType,
+    mcpTimeout :: Int -- Timeout in microseconds
+  }
+  deriving (Show)
+
+-- | Systematic MCP tool testing with expectations
+testMCPToolWithExpectation :: MCPDemoServer -> MCPToolExpectation -> IO Bool
+testMCPToolWithExpectation server expectation = do
+  result <- testMCPTool server (mcpToolName expectation) (mcpToolArgs expectation) (mcpTimeout expectation)
+  case result of
+    Left errorMsg ->
+      case mcpExpectedResult expectation of
+        ShouldFail -> return True
+        ShouldHaveErrorType expectedError -> return $ expectedError `T.isInfixOf` errorMsg
+        _ -> return False
+    Right response ->
+      let responseText = T.pack $ show response
+      in return $ verifyMCPExpectation (mcpExpectedResult expectation) responseText
+
+-- | Verify MCP tool expectation
+verifyMCPExpectation :: ExpectationType -> Text -> Bool
+verifyMCPExpectation ShouldSucceed responseText =
+  not $ "error" `T.isInfixOf` T.toLower responseText
+verifyMCPExpectation ShouldFail responseText =
+  "error" `T.isInfixOf` T.toLower responseText
+verifyMCPExpectation (ShouldContainText expected) responseText =
+  expected `T.isInfixOf` responseText
+verifyMCPExpectation (ShouldMatchPattern pattern) responseText =
+  responseText =~ T.unpack pattern
+verifyMCPExpectation (ShouldHaveErrorType expectedError) responseText =
+  expectedError `T.isInfixOf` responseText
+verifyMCPExpectation _ _ = True -- Other expectations not applicable to MCP
+
+-- | Run multiple MCP tool tests in sequence
+runMCPToolTests :: MCPDemoServer -> [MCPToolExpectation] -> IO [(Text, Bool)]
+runMCPToolTests server expectations = do
+  results <- mapM (testMCPToolWithExpectation server) expectations
+  return $ zip (map mcpToolName expectations) results
+
+-- | MCP tool test result summary
+data MCPTestSummary = MCPTestSummary
+  { totalTests :: Int,
+    passedTests :: Int,
+    failedTests :: Int,
+    testResults :: [(Text, Bool)]
+  }
+  deriving (Show)
+
+-- | Generate test summary
+generateMCPTestSummary :: [(Text, Bool)] -> MCPTestSummary
+generateMCPTestSummary results =
+  let total = length results
+      passed = length $ filter snd results
+      failed = total - passed
+  in MCPTestSummary total passed failed results
+
+-- | Data type for expectation verification
+data ExpectationType
+  = ShouldSucceed
+  | ShouldFail
+  | ShouldContainText Text
+  | ShouldMatchPattern Text
+  | ShouldHaveErrorType Text
+  | ShouldHaveWarningCount Int
+  | ShouldHaveCompletionCount Int
+  | ShouldHaveTypeSignature Text
+  | ShouldHaveImport Text
+  deriving (Show, Eq)

@@ -12,11 +12,44 @@ import HLS.Process
 -- Handle HLS Tool Calls
 handleHLSTool :: Text -> Maybe Value -> IO ToolResult
 handleHLSTool toolName maybeArgs = case toolName of
+  -- Server Management
   "restart_hls_server" -> restartHLSTool
   "start_hls_server" -> startHLSTool maybeArgs
   "stop_hls_server" -> stopHLSTool
   "get_hls_status" -> getHLSStatusTool
   "show_versions" -> showVersionsTool
+  
+  -- LSP Basic Operations
+  "hover_info" -> hoverInfoTool maybeArgs
+  "goto_definition" -> gotoDefinitionTool maybeArgs
+  "find_references" -> findReferencesTool maybeArgs
+  "document_symbols" -> documentSymbolsTool maybeArgs
+  "workspace_symbols" -> workspaceSymbolsTool maybeArgs
+  "get_diagnostics" -> getDiagnosticsTool maybeArgs
+  "format_document" -> formatDocumentTool maybeArgs
+  "get_completions" -> getCompletionsTool maybeArgs
+  
+  -- Code Actions and Refactoring
+  "get_code_actions" -> getCodeActionsTool maybeArgs
+  "add_type_signature" -> addTypeSignatureTool maybeArgs
+  "extend_import" -> extendImportTool maybeArgs
+  "execute_command" -> executeCommandTool maybeArgs
+  "retrie_refactor" -> retrieRefactorTool maybeArgs
+  "gadt_conversion" -> gadtConversionTool maybeArgs
+  "expand_th_splice" -> expandTHSpliceTool maybeArgs
+  "update_module_name" -> updateModuleNameTool maybeArgs
+  "add_cabal_dependency" -> addCabalDependencyTool maybeArgs
+  
+  -- Code Lens Operations
+  "get_code_lenses" -> getCodeLensesTool maybeArgs
+  "resolve_code_lens" -> resolveCodeLensTool maybeArgs
+  
+  -- Advanced Operations
+  "eval_expression" -> evalExpressionTool maybeArgs
+  "organize_imports" -> organizeImportsTool maybeArgs
+  "insert_import" -> insertImportTool maybeArgs
+  "remove_unused_imports" -> removeUnusedImportsTool maybeArgs
+  
   _ -> return $ ToolResult
     [ ToolContent "text" (Just $ "Unknown HLS tool: " <> toolName) ]
     (Just True)
@@ -93,3 +126,454 @@ showVersionsTool = do
   return $ ToolResult
     [ ToolContent "text" (Just $ T.unlines [mcpVersion, protocolVersion, hlsVersion]) ]
     Nothing
+
+-- LSP Information Tools
+hoverInfoTool :: Maybe Value -> IO ToolResult
+hoverInfoTool maybeArgs = do
+  case parseFileAndPosition maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, line, character") ]
+      (Just True)
+    Just (filePath, line, char) -> do
+      result <- getHoverInfo filePath line char
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting hover info: " <> err) ]
+          (Just True)
+        Right hoverText -> return $ ToolResult
+          [ ToolContent "text" (Just hoverText) ]
+          Nothing
+
+gotoDefinitionTool :: Maybe Value -> IO ToolResult
+gotoDefinitionTool maybeArgs = do
+  case parseFileAndPosition maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, line, character") ]
+      (Just True)
+    Just (filePath, line, char) -> do
+      result <- gotoDefinition filePath line char
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting definition: " <> err) ]
+          (Just True)
+        Right locations -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Definition locations: " <> T.pack (show locations)) ]
+          Nothing
+
+findReferencesTool :: Maybe Value -> IO ToolResult
+findReferencesTool maybeArgs = do
+  case parseFileAndPosition maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, line, character") ]
+      (Just True)
+    Just (filePath, line, char) -> do
+      result <- findReferences filePath line char
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error finding references: " <> err) ]
+          (Just True)
+        Right references -> return $ ToolResult
+          [ ToolContent "text" (Just $ "References: " <> T.pack (show references)) ]
+          Nothing
+
+documentSymbolsTool :: Maybe Value -> IO ToolResult
+documentSymbolsTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- getDocumentSymbols filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting document symbols: " <> err) ]
+          (Just True)
+        Right symbols -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Document symbols: " <> T.pack (show symbols)) ]
+          Nothing
+
+workspaceSymbolsTool :: Maybe Value -> IO ToolResult
+workspaceSymbolsTool maybeArgs = do
+  case parseQuery maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: query") ]
+      (Just True)
+    Just query -> do
+      result <- getWorkspaceSymbols query
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting workspace symbols: " <> err) ]
+          (Just True)
+        Right symbols -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Workspace symbols: " <> T.pack (show symbols)) ]
+          Nothing
+
+getDiagnosticsTool :: Maybe Value -> IO ToolResult
+getDiagnosticsTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- getFileDiagnostics filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting diagnostics: " <> err) ]
+          (Just True)
+        Right diagnostics -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Diagnostics: " <> T.pack (show diagnostics)) ]
+          Nothing
+
+formatDocumentTool :: Maybe Value -> IO ToolResult
+formatDocumentTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- formatDocument filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error formatting document: " <> err) ]
+          (Just True)
+        Right formatted -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Document formatted successfully: " <> formatted) ]
+          Nothing
+
+getCompletionsTool :: Maybe Value -> IO ToolResult
+getCompletionsTool maybeArgs = do
+  case parseFileAndPosition maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, line, character") ]
+      (Just True)
+    Just (filePath, line, char) -> do
+      result <- getCompletions filePath line char
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting completions: " <> err) ]
+          (Just True)
+        Right completions -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Completions: " <> T.pack (show completions)) ]
+          Nothing
+
+-- Code Actions and Commands
+getCodeActionsTool :: Maybe Value -> IO ToolResult
+getCodeActionsTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- getCodeActions filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting code actions: " <> err) ]
+          (Just True)
+        Right actions -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Code actions: " <> T.pack (show actions)) ]
+          Nothing
+
+addTypeSignatureTool :: Maybe Value -> IO ToolResult
+addTypeSignatureTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- executeHLSCommand "ghcide-type-lenses:typesignature.add" filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error adding type signature: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Type signature added: " <> T.pack (show response)) ]
+          Nothing
+
+extendImportTool :: Maybe Value -> IO ToolResult
+extendImportTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- executeHLSCommand "ghcide-extend-import-action:extendImport" filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error extending import: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Import extended: " <> T.pack (show response)) ]
+          Nothing
+
+executeCommandTool :: Maybe Value -> IO ToolResult
+executeCommandTool maybeArgs = do
+  case parseCommandAndArgs maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: command, arguments") ]
+      (Just True)
+    Just (command, args) -> do
+      result <- executeGenericHLSCommand command args
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error executing command: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Command executed: " <> T.pack (show response)) ]
+          Nothing
+
+retrieRefactorTool :: Maybe Value -> IO ToolResult
+retrieRefactorTool maybeArgs = do
+  case parseRetrieArgs maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, lhs, rhs") ]
+      (Just True)
+    Just (filePath, lhs, rhs) -> do
+      result <- executeRetrieCommand filePath lhs rhs
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error executing retrie refactoring: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Retrie refactoring completed: " <> T.pack (show response)) ]
+          Nothing
+
+gadtConversionTool :: Maybe Value -> IO ToolResult
+gadtConversionTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- executeHLSCommand "gadt:GADT.toGADT" filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error converting to GADT: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "GADT conversion completed: " <> T.pack (show response)) ]
+          Nothing
+
+expandTHSpliceTool :: Maybe Value -> IO ToolResult
+expandTHSpliceTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- executeHLSCommand "splice:expandTHSpliceInplace" filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error expanding TH splice: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "TH splice expanded: " <> T.pack (show response)) ]
+          Nothing
+
+updateModuleNameTool :: Maybe Value -> IO ToolResult
+updateModuleNameTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- executeModuleNameCommand filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error updating module name: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Module name updated: " <> T.pack (show response)) ]
+          Nothing
+
+addCabalDependencyTool :: Maybe Value -> IO ToolResult
+addCabalDependencyTool maybeArgs = do
+  case parseCabalDependencyArgs maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, dependency") ]
+      (Just True)
+    Just (filePath, dependency) -> do
+      result <- executeCabalAddCommand filePath dependency
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error adding cabal dependency: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Cabal dependency added: " <> T.pack (show response)) ]
+          Nothing
+
+-- Code Lens Operations
+getCodeLensesTool :: Maybe Value -> IO ToolResult
+getCodeLensesTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- getCodeLenses filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error getting code lenses: " <> err) ]
+          (Just True)
+        Right lenses -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Code lenses: " <> T.pack (show lenses)) ]
+          Nothing
+
+resolveCodeLensTool :: Maybe Value -> IO ToolResult
+resolveCodeLensTool maybeArgs = do
+  case parseCodeLensArgs maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: codeLens") ]
+      (Just True)
+    Just codeLensData -> do
+      result <- resolveCodeLens codeLensData
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error resolving code lens: " <> err) ]
+          (Just True)
+        Right resolved -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Code lens resolved: " <> T.pack (show resolved)) ]
+          Nothing
+
+-- Advanced Operations
+evalExpressionTool :: Maybe Value -> IO ToolResult
+evalExpressionTool maybeArgs = do
+  case parseFileAndRange maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, startLine, startChar, endLine, endChar") ]
+      (Just True)
+    Just (filePath, startLine, startChar, endLine, endChar) -> do
+      result <- executeHLSCommand "eval:evalCommand" filePath startLine startChar endLine endChar
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error evaluating expression: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Expression evaluated: " <> T.pack (show response)) ]
+          Nothing
+
+organizeImportsTool :: Maybe Value -> IO ToolResult
+organizeImportsTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- organizeImports filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error organizing imports: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Imports organized: " <> T.pack (show response)) ]
+          Nothing
+
+insertImportTool :: Maybe Value -> IO ToolResult
+insertImportTool maybeArgs = do
+  case parseInsertImportArgs maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameters: filePath, moduleName, symbol") ]
+      (Just True)
+    Just (filePath, moduleName, symbol) -> do
+      result <- insertImport filePath moduleName symbol
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error inserting import: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Import inserted: " <> T.pack (show response)) ]
+          Nothing
+
+removeUnusedImportsTool :: Maybe Value -> IO ToolResult
+removeUnusedImportsTool maybeArgs = do
+  case parseFilePath maybeArgs of
+    Nothing -> return $ ToolResult
+      [ ToolContent "text" (Just "Missing required parameter: filePath") ]
+      (Just True)
+    Just filePath -> do
+      result <- removeUnusedImports filePath
+      case result of
+        Left err -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Error removing unused imports: " <> err) ]
+          (Just True)
+        Right response -> return $ ToolResult
+          [ ToolContent "text" (Just $ "Unused imports removed: " <> T.pack (show response)) ]
+          Nothing
+
+-- Argument parsing helpers
+parseFileAndPosition :: Maybe Value -> Maybe (FilePath, Int, Int)
+parseFileAndPosition Nothing = Nothing
+parseFileAndPosition (Just args) = case fromJSON args of
+  Success obj -> do
+    filePath <- T.unpack <$> parseMaybe (.: "filePath") obj
+    line <- parseMaybe (.: "line") obj
+    char <- parseMaybe (.: "character") obj
+    return (filePath, line, char)
+  Data.Aeson.Error _ -> Nothing
+
+parseFilePath :: Maybe Value -> Maybe FilePath
+parseFilePath Nothing = Nothing
+parseFilePath (Just args) = case fromJSON args of
+  Success obj -> T.unpack <$> parseMaybe (.: "filePath") obj
+  Data.Aeson.Error _ -> Nothing
+
+parseQuery :: Maybe Value -> Maybe Text
+parseQuery Nothing = Nothing
+parseQuery (Just args) = case fromJSON args of
+  Success obj -> parseMaybe (.: "query") obj
+  Data.Aeson.Error _ -> Nothing
+
+parseFileAndRange :: Maybe Value -> Maybe (FilePath, Int, Int, Int, Int)
+parseFileAndRange Nothing = Nothing
+parseFileAndRange (Just args) = case fromJSON args of
+  Success obj -> do
+    filePath <- T.unpack <$> parseMaybe (.: "filePath") obj
+    startLine <- parseMaybe (.: "startLine") obj
+    startChar <- parseMaybe (.: "startChar") obj
+    endLine <- parseMaybe (.: "endLine") obj
+    endChar <- parseMaybe (.: "endChar") obj
+    return (filePath, startLine, startChar, endLine, endChar)
+  Data.Aeson.Error _ -> Nothing
+
+parseCommandAndArgs :: Maybe Value -> Maybe (Text, Value)
+parseCommandAndArgs Nothing = Nothing
+parseCommandAndArgs (Just args) = case fromJSON args of
+  Success obj -> do
+    command <- parseMaybe (.: "command") obj
+    arguments <- parseMaybe (.: "arguments") obj
+    return (command, arguments)
+  Data.Aeson.Error _ -> Nothing
+
+parseRetrieArgs :: Maybe Value -> Maybe (FilePath, Text, Text)
+parseRetrieArgs Nothing = Nothing
+parseRetrieArgs (Just args) = case fromJSON args of
+  Success obj -> do
+    filePath <- T.unpack <$> parseMaybe (.: "filePath") obj
+    lhs <- parseMaybe (.: "lhs") obj
+    rhs <- parseMaybe (.: "rhs") obj
+    return (filePath, lhs, rhs)
+  Data.Aeson.Error _ -> Nothing
+
+parseCabalDependencyArgs :: Maybe Value -> Maybe (FilePath, Text)
+parseCabalDependencyArgs Nothing = Nothing
+parseCabalDependencyArgs (Just args) = case fromJSON args of
+  Success obj -> do
+    filePath <- T.unpack <$> parseMaybe (.: "filePath") obj
+    dependency <- parseMaybe (.: "dependency") obj
+    return (filePath, dependency)
+  Data.Aeson.Error _ -> Nothing
+
+parseCodeLensArgs :: Maybe Value -> Maybe Value
+parseCodeLensArgs Nothing = Nothing
+parseCodeLensArgs (Just args) = case fromJSON args of
+  Success obj -> parseMaybe (.: "codeLens") obj
+  Data.Aeson.Error _ -> Nothing
+
+parseInsertImportArgs :: Maybe Value -> Maybe (FilePath, Text, Maybe Text)
+parseInsertImportArgs Nothing = Nothing
+parseInsertImportArgs (Just args) = case fromJSON args of
+  Success obj -> do
+    filePath <- T.unpack <$> parseMaybe (.: "filePath") obj
+    moduleName <- parseMaybe (.: "moduleName") obj
+    symbol <- parseMaybe (.:? "symbol") obj
+    return (filePath, moduleName, symbol)
+  Data.Aeson.Error _ -> Nothing

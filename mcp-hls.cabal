@@ -66,6 +66,7 @@ library
                     , HLS.Client
                     , HLS.Process
                     , HLS.Config
+                    , HLS.Signals
                     , Utils.Logging
                     , Utils.FileSystem
     build-depends:    base
@@ -87,6 +88,11 @@ library
                     , time
                     , temporary
                     , regex-posix
+                    , dependent-map
+                    , dependent-sum
+                    , dependent-sum-template
+                    , constraints-extras
+                    , some
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -120,14 +126,20 @@ test-suite hls-integration-tests
     other-modules:    HLS.IntegrationSpec
                     , HLS.LSPSpec
                     , HLS.CommandSpec
+                    , HLS.SignalHandlingSpec
                     , MCP.ToolsSpec
+                    , MCP.SimpleEndToEndSpec
+                    , MCP.FullPipelineSpec
+                    , MCP.ComprehensiveToolSpec
                     , Test.Utils
                     , Test.Fixtures
+                    , Test.DemoProject
     build-depends:    base
                     , mcp-hls
                     , hspec >= 2.7
                     , hspec-discover
                     , process
+                    , typed-process
                     , aeson
                     , text
                     , bytestring
@@ -139,5 +151,8 @@ test-suite hls-integration-tests
                     , stm-containers
                     , list-t
                     , time
+                    , unix
+                    , regex-posix
+                    , regex-tdfa
     hs-source-dirs:   test
     default-language: Haskell2010
