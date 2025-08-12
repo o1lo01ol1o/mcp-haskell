@@ -21,6 +21,8 @@ import System.IO (stderr, stdout, stdin, hFlush, hIsEOF, hReady, Handle, openFil
 import qualified System.IO
 import System.IO.Error (isEOFError)
 import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
+import System.Directory (getHomeDirectory, createDirectoryIfMissing)
+import System.FilePath ((</>))
 
 -- MCP imports
 import MCP.Types
@@ -71,16 +73,29 @@ createGHCIDServer config = do
     , logHandle = logHandle
     }
 
--- | Open log file for message logging
+-- | Open log file for message logging in a writable location
 openMessageLogFile :: IO (Maybe Handle)
 openMessageLogFile = do
-  result <- try $ openFile "mcp-ghcid-messages.log" AppendMode
+  result <- try $ do
+    -- Get user's home directory and create logs subdirectory
+    homeDir <- getHomeDirectory
+    let logsDir = homeDir </> ".mcp-ghcid"
+        logFile = logsDir </> "messages.log"
+    
+    -- Create directory if it doesn't exist
+    createDirectoryIfMissing True logsDir
+    
+    -- Open log file
+    openFile logFile AppendMode
+  
   case result of
     Left (ex :: SomeException) -> do
       logError $ "Failed to open message log file: " <> T.pack (show ex)
       return Nothing
     Right handle -> do
-      logInfo "Opened message log file: mcp-ghcid-messages.log"
+      homeDir <- getHomeDirectory
+      let logPath = homeDir </> ".mcp-ghcid" </> "messages.log"
+      logInfo $ "Opened message log file: " <> T.pack logPath
       return (Just handle)
 
 -- | Log a JSON-RPC message to the message log file with timestamp
