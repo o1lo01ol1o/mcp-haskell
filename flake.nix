@@ -4,7 +4,7 @@
     systems.url = "github:nix-systems/default";
     devenv.url = "github:cachix/devenv/d1388a093a7225c2abe8c244109c5a4490de4077";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
-    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/a0fc84f78bc1196ac724213746b31d229c972e92";
+    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/24eceea3695968aaa62fa1be1da76e36ee70fac3";
   };
 
   nixConfig = {
