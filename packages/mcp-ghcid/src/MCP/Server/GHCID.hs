@@ -16,9 +16,11 @@ import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.IO (stderr, stdout, stdin, hFlush, hIsEOF, hReady)
+import qualified Data.Text.IO as T
+import System.IO (stderr, stdout, stdin, hFlush, hIsEOF, hReady, Handle, openFile, IOMode(..), hClose)
 import qualified System.IO
 import System.IO.Error (isEOFError)
+import Data.Time (getCurrentTime, formatTime, defaultTimeLocale)
 
 -- MCP imports
 import MCP.Types
@@ -43,12 +45,16 @@ data GHCIDServer = GHCIDServer
   { ghcidRegistry :: GHCIDRegistry
   , serverConfig :: GHCIDServerConfig
   , serverCapabilities :: GHCIDServerCapabilities
+  , logHandle :: Maybe Handle  -- Handle for message logging
   }
 
 -- | Create GHCID MCP server  
 createGHCIDServer :: GHCIDServerConfig -> IO GHCIDServer
 createGHCIDServer config = do
   registry <- registerGHCIDTools
+  
+  -- Open log file for message logging
+  logHandle <- openMessageLogFile
   
   let capabilities = GHCIDServerCapabilities
         { capServerName = serverName config
@@ -62,7 +68,49 @@ createGHCIDServer config = do
     { ghcidRegistry = registry
     , serverConfig = config  
     , serverCapabilities = capabilities
+    , logHandle = logHandle
     }
+
+-- | Open log file for message logging
+openMessageLogFile :: IO (Maybe Handle)
+openMessageLogFile = do
+  result <- try $ openFile "mcp-ghcid-messages.log" AppendMode
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to open message log file: " <> T.pack (show ex)
+      return Nothing
+    Right handle -> do
+      logInfo "Opened message log file: mcp-ghcid-messages.log"
+      return (Just handle)
+
+-- | Log a JSON-RPC message to the message log file with timestamp
+logJsonRpcMessage :: GHCIDServer -> Text -> Text -> IO ()
+logJsonRpcMessage server direction content = do
+  case logHandle server of
+    Nothing -> return ()  -- No logging if file couldn't be opened
+    Just handle -> do
+      timestamp <- getCurrentTime
+      let timeStr = T.pack $ formatTime defaultTimeLocale "%Y-%m-%d %H:%M:%S.%q" timestamp
+          logEntry = T.concat [timeStr, " [", direction, "] ", content, "\n"]
+      result <- try $ do
+        T.hPutStr handle logEntry
+        hFlush handle
+      case result of
+        Left (ex :: SomeException) -> 
+          logError $ "Failed to write to message log: " <> T.pack (show ex)
+        Right _ -> return ()
+
+-- | Log an incoming JSON-RPC request
+logIncomingMessage :: GHCIDServer -> JsonRpcRequest -> IO ()
+logIncomingMessage server request = do
+  let jsonStr = T.decodeUtf8 $ L8.toStrict $ encode request
+  logJsonRpcMessage server "RECV" jsonStr
+
+-- | Log an outgoing JSON-RPC response  
+logOutgoingMessage :: GHCIDServer -> JsonRpcResponse -> IO ()
+logOutgoingMessage server response = do
+  let jsonStr = T.decodeUtf8 $ L8.toStrict $ encode response
+  logJsonRpcMessage server "SEND" jsonStr
 
 -- | Run the GHCID MCP server
 runGHCIDServer :: GHCIDServerConfig -> IO ()
@@ -72,10 +120,20 @@ runGHCIDServer config = do
   logInfo $ "Starting MCP-GHCID Server v" <> serverVersion config
   -- STDIO protocol compliance: no stderr output during normal operation
   
+  -- Log startup message to message log
+  logJsonRpcMessage server "INFO" "=== MCP-GHCID Server Started ==="
+  
   serverLoop server `catch` \(ex :: SomeException) -> do
     logError $ "Server error: " <> T.pack (show ex)
     -- Only log critical errors to stderr in exceptional cases
     System.IO.hPutStrLn stderr $ "Critical server error: " ++ show ex
+  
+  -- Cleanup: close log file handle
+  case logHandle server of
+    Nothing -> return ()
+    Just handle -> do
+      logInfo "Closing message log file"
+      hClose handle
 
 -- | Main server loop
 serverLoop :: GHCIDServer -> IO ()
@@ -96,6 +154,9 @@ serverLoop server = do
           threadDelay 100000  -- Wait 100ms
           serverLoop' srv
         Right (Just request) -> do
+          -- Log incoming message
+          logIncomingMessage srv request
+          
           response <- handleRequest srv request
           case response of
             Left "No response needed for notification" -> do
@@ -103,8 +164,8 @@ serverLoop server = do
               logInfo "Notification processed successfully"
             Left err -> do
               let errorResponse = createErrorResponse internalError err Nothing (getRequestId request)
-              sendResponse errorResponse
-            Right resp -> sendResponse resp
+              sendResponse srv errorResponse
+            Right resp -> sendResponse srv resp
           -- Continue the loop
           serverLoop' srv
 
@@ -130,8 +191,12 @@ readMessage = do
 
 
 -- | Send a JSON-RPC response to stdout
-sendResponse :: JsonRpcResponse -> IO ()
-sendResponse response = do
+sendResponse :: GHCIDServer -> JsonRpcResponse -> IO ()
+sendResponse server response = do
+  -- Log outgoing message
+  logOutgoingMessage server response
+  
+  -- Send to stdout
   L8.putStrLn $ encode response
   hFlush stdout
 
