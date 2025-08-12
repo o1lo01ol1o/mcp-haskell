@@ -28,7 +28,7 @@ import GHC.Generics (Generic)
 
 -- MCP Protocol Version (2025 specification)
 mcpVersion :: Text
-mcpVersion = "2025-03-26"
+mcpVersion = "2025-06-18"
 
 -- JSON-RPC 2.0 Message Types
 data JsonRpcRequest = JsonRpcRequest

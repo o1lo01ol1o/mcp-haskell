@@ -70,11 +70,12 @@ runGHCIDServer config = do
   server <- createGHCIDServer config
   
   logInfo $ "Starting MCP-GHCID Server v" <> serverVersion config
-  System.IO.hPutStrLn stderr "MCP-GHCID Server starting..."
+  -- STDIO protocol compliance: no stderr output during normal operation
   
   serverLoop server `catch` \(ex :: SomeException) -> do
     logError $ "Server error: " <> T.pack (show ex)
-    System.IO.hPutStrLn stderr $ "Server error: " ++ show ex
+    -- Only log critical errors to stderr in exceptional cases
+    System.IO.hPutStrLn stderr $ "Critical server error: " ++ show ex
 
 -- | Main server loop
 serverLoop :: GHCIDServer -> IO ()

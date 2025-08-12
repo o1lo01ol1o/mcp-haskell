@@ -139,7 +139,7 @@ showVersion = putStrLn $ unlines
   , ""
   , "Built with:"
   , "  - GHC 9.8.4"
-  , "  - MCP Protocol v2025-03-26"
+  , "  - MCP Protocol v2025-06-18"
   , ""
   , "Copyright (c) 2025 o1lo01ol1o"
   , "Licensed under MIT License"
