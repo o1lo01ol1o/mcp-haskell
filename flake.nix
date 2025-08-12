@@ -31,7 +31,7 @@
           # Provide mcp-ghcid as a convenient package using GHC 9.8.4
           mcp-ghcid = mcp-haskell.lib.mkMcpGhcid {
             inherit system;
-            ghcid = pkgs.haskell.packages.ghc948.ghcid;
+            ghcid = pkgs.ghcid;
           };
           
           # Make it the default package
@@ -91,7 +91,7 @@
                     # Add mcp-ghcid using the same GHC version as our Haskell development
                     (mcp-haskell.lib.mkMcpGhcid {
                       inherit system;
-                      ghcid = pkgs.haskell.packages.ghc948.ghcid;
+                      ghcid = pkgs.ghcid;
                     })
                   ];
 
