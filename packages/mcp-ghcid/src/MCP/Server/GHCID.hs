@@ -97,6 +97,9 @@ serverLoop server = do
         Right (Just request) -> do
           response <- handleRequest srv request
           case response of
+            Left "No response needed for notification" -> do
+              -- Notification processed successfully, no response to send
+              logInfo "Notification processed successfully"
             Left err -> do
               let errorResponse = createErrorResponse internalError err Nothing (getRequestId request)
               sendResponse errorResponse
@@ -146,6 +149,7 @@ handleRequest server request = do
       
       result <- case methodName of
         "initialize" -> handleInitializeRequest server request
+        "initialized" -> handleInitializedNotification server request
         "tools/call" -> handleToolCallRequest server request
         "tools/list" -> handleToolsListRequest server request
         "resources/list" -> handleResourcesListRequest server request
@@ -153,7 +157,11 @@ handleRequest server request = do
       
       case result of
         Left err -> return $ Right $ createErrorResponse methodNotFound err Nothing (getRequestId request)
-        Right value -> return $ Right $ createResponse (Just value) Nothing (getRequestId request)
+        Right value -> 
+          -- Check if this is a notification (no id field) - don't send response
+          case getRequestId request of
+            Nothing -> return $ Left "No response needed for notification"
+            Just _ -> return $ Right $ createResponse (Just value) Nothing (getRequestId request)
 
 -- | Handle initialize request
 handleInitializeRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
@@ -175,6 +183,13 @@ handleInitializeRequest server _request = do
         , "version" .= serverVersion (serverConfig server)
         ]
     ]
+
+-- | Handle initialized notification (no response needed)
+handleInitializedNotification :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
+handleInitializedNotification _server _request = do
+  logInfo "Processing initialized notification - server is ready"
+  -- For notifications, we return success but no response body is sent
+  return $ Right $ object []
 
 -- | Handle tool call request
 handleToolCallRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
