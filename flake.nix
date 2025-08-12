@@ -4,6 +4,7 @@
     systems.url = "github:nix-systems/default";
     devenv.url = "github:cachix/devenv/d1388a093a7225c2abe8c244109c5a4490de4077";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
+    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/01b2865194de92c466dc77cb7429b34f424a9679";
   };
 
   nixConfig = {
@@ -11,7 +12,7 @@
     extra-substituters = "https://devenv.cachix.org";
   };
 
-  outputs = { self, nixpkgs, devenv, systems, ... } @ inputs:
+  outputs = { self, nixpkgs, devenv, systems, mcp-haskell, ... } @ inputs:
     let
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
     in
@@ -26,6 +27,15 @@
         in {
           devenv-up = self.devShells.${system}.default.config.procfileScript;
           devenv-test = self.devShells.${system}.default.config.test;
+          
+          # Provide mcp-ghcid as a convenient package using GHC 9.8.4
+          mcp-ghcid = mcp-haskell.lib.mkMcpGhcid {
+            inherit system;
+            ghcid = pkgs.haskell.packages.ghc948.ghcid;
+          };
+          
+          # Make it the default package
+          default = self.packages.${system}.mcp-ghcid;
         });
       
       # Library functions for creating mcp-ghcid with custom ghcid
@@ -76,7 +86,14 @@
                   languages.haskell.enable = true;
                   languages.nix.enable = true;
                   
-                  packages = [ pkgs.hello ];
+                  packages = [ 
+                    pkgs.hello 
+                    # Add mcp-ghcid using the same GHC version as our Haskell development
+                    (mcp-haskell.lib.mkMcpGhcid {
+                      inherit system;
+                      ghcid = pkgs.haskell.packages.ghc948.ghcid;
+                    })
+                  ];
 
                   claude.code = {
                     enable = true;
