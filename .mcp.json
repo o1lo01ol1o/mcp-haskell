@@ -8,6 +8,13 @@
         "@modelcontextprotocol/server-sequential-thinking"
       ],
       "env": {}
+    },
+    "ghcid": {
+      "type": "stdio",
+      "command": "/Users/timpierson/Work/mcp-hls/result/bin/mcp-ghcid",
+      "args": [],
+      "env": {},
+      "description": "GHCID integration for continuous Haskell compilation monitoring"
     }
   }
 }

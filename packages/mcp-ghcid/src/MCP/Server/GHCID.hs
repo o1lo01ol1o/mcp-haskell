@@ -172,15 +172,15 @@ serverLoop server = do
           -- Log incoming message
           logIncomingMessage srv request
           
-          response <- handleRequest srv request
-          case response of
-            Left "No response needed for notification" -> do
+          result <- handleRequest srv request
+          case result of
+            NotificationProcessed -> do
               -- Notification processed successfully, no response to send
               logInfo "Notification processed successfully"
-            Left err -> do
+            RequestError err -> do
               let errorResponse = createErrorResponse internalError err Nothing (getRequestId request)
               sendResponse srv errorResponse
-            Right resp -> sendResponse srv resp
+            ResponseReady resp -> sendResponse srv resp
           -- Continue the loop
           serverLoop' srv
 
@@ -220,10 +220,10 @@ getRequestId :: JsonRpcRequest -> Maybe Value
 getRequestId (JsonRpcRequest _ _ _ reqId) = reqId
 
 -- | Handle incoming MCP request
-handleRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text JsonRpcResponse)
+handleRequest :: GHCIDServer -> JsonRpcRequest -> IO RequestHandlingResult
 handleRequest server request = do
   case validateRequest request of
-    Left err -> return $ Right $ createErrorResponse (code err) (message err) (errorData err) (getRequestId request)
+    Left err -> return $ ResponseReady $ createErrorResponse (code err) (message err) (errorData err) (getRequestId request)
     Right _ -> do
       let methodName = method request
       logInfo $ "Handling request: " <> methodName
@@ -238,12 +238,12 @@ handleRequest server request = do
         _ -> return $ Left $ "Method not found: " <> methodName
       
       case result of
-        Left err -> return $ Right $ createErrorResponse methodNotFound err Nothing (getRequestId request)
+        Left err -> return $ ResponseReady $ createErrorResponse methodNotFound err Nothing (getRequestId request)
         Right value -> 
           -- Check if this is a notification (no id field) - don't send response
           case getRequestId request of
-            Nothing -> return $ Left "No response needed for notification"
-            Just _ -> return $ Right $ createResponse (Just value) Nothing (getRequestId request)
+            Nothing -> return NotificationProcessed
+            Just _ -> return $ ResponseReady $ createResponse (Just value) Nothing (getRequestId request)
 
 -- | Handle initialize request
 handleInitializeRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
@@ -270,7 +270,7 @@ handleInitializeRequest server _request = do
 handleInitializedNotification :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
 handleInitializedNotification _server _request = do
   logInfo "Processing initialized notification - server is ready"
-  -- For notifications, we return success but no response body is sent
+  -- Return success for notification processing (actual response decision is made in handleRequest)
   return $ Right $ object []
 
 -- | Handle notifications/cancelled request
@@ -284,7 +284,7 @@ handleNotificationsCancelledRequest _server request = do
         Data.Aeson.Error err -> logWarn $ "Failed to parse cancelled notification params: " <> T.pack err
         Success cancelData -> do
           logInfo $ "Request cancelled: " <> T.pack (show cancelData)
-  -- For notifications, we return success but no response body is sent
+  -- Return success for notification processing (actual response decision is made in handleRequest)
   return $ Right $ object []
 
 -- | Handle tool call request
@@ -337,6 +337,13 @@ handleResourcesListRequest _server _request = do
     ]
 
 -- Helper data types
+
+-- | Result of handling a JSON-RPC request
+data RequestHandlingResult
+  = NotificationProcessed    -- ^ Notification was processed successfully, no response needed
+  | ResponseReady JsonRpcResponse  -- ^ Request was processed successfully, response ready to send
+  | RequestError Text             -- ^ Request failed with error message
+  deriving (Show)
 
 data ServerToolCall = ServerToolCall
   { toolCallName :: Text
