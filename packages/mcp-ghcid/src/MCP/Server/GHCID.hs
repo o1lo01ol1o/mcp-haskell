@@ -164,10 +164,10 @@ serverLoop server = do
           -- Continue the loop instead of crashing
           serverLoop' srv
         Right Nothing -> do
-          -- EOF encountered, wait briefly and check again
-          logInfo "EOF encountered, waiting for reconnection..."
-          threadDelay 100000  -- Wait 100ms
-          serverLoop' srv
+          -- EOF encountered - client has disconnected
+          logJsonRpcMessage srv "INFO" "Client disconnected - EOF received"
+          logInfo "Client disconnected, shutting down server"
+          return ()
         Right (Just request) -> do
           -- Log incoming message
           logIncomingMessage srv request
