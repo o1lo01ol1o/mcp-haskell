@@ -7,16 +7,18 @@ module MCP.Server.GHCID
   , GHCIDServer(..)
   ) where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.STM
-import Control.Exception (catch, SomeException)
+import Control.Exception (catch, SomeException, try)
 import Control.Monad (forever)
 import Data.Aeson
 import qualified Data.Text.Encoding as T
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.IO (stderr, stdout, stdin, hFlush)
+import System.IO (stderr, stdout, stdin, hFlush, hIsEOF, hReady)
 import qualified System.IO
+import System.IO.Error (isEOFError)
 
 -- MCP imports
 import MCP.Types
@@ -76,25 +78,52 @@ runGHCIDServer config = do
 
 -- | Main server loop
 serverLoop :: GHCIDServer -> IO ()
-serverLoop server = forever $ do
-  result <- MCP.Server.GHCID.readMessage
-  case result of
-    Left err -> logError $ "Failed to read message: " <> err
-    Right request -> do
-      response <- handleRequest server request
-      case response of
+serverLoop server = do
+  logInfo "Entering server loop"
+  serverLoop' server
+  where
+    serverLoop' srv = do
+      result <- MCP.Server.GHCID.readMessage
+      case result of
         Left err -> do
-          let errorResponse = createErrorResponse internalError err Nothing (getRequestId request)
-          sendResponse errorResponse
-        Right resp -> sendResponse resp
+          logError $ "Failed to read message: " <> err
+          -- Continue the loop instead of crashing
+          serverLoop' srv
+        Right Nothing -> do
+          -- EOF encountered, wait briefly and check again
+          logInfo "EOF encountered, waiting for reconnection..."
+          threadDelay 100000  -- Wait 100ms
+          serverLoop' srv
+        Right (Just request) -> do
+          response <- handleRequest srv request
+          case response of
+            Left err -> do
+              let errorResponse = createErrorResponse internalError err Nothing (getRequestId request)
+              sendResponse errorResponse
+            Right resp -> sendResponse resp
+          -- Continue the loop
+          serverLoop' srv
 
--- | Read a JSON-RPC message from stdin
-readMessage :: IO (Either Text JsonRpcRequest)
+-- | Read a JSON-RPC message from stdin with EOF handling
+readMessage :: IO (Either Text (Maybe JsonRpcRequest))
 readMessage = do
-  line <- getLine
-  case eitherDecodeStrict $ T.encodeUtf8 $ T.pack line of
-    Left err -> return $ Left $ "Failed to decode JSON: " <> T.pack err
-    Right request -> return $ Right request
+  result <- try MCP.Protocol.readLineWithEOF
+  case result of
+    Left ex | isEOFError ex -> do
+      -- EOF is normal when client disconnects, return Nothing to indicate this
+      return $ Right Nothing
+    Left ex -> do
+      -- Other IO errors
+      return $ Left $ "IO error reading from stdin: " <> T.pack (show ex)
+    Right Nothing -> do
+      -- EOF detected by hIsEOF check
+      return $ Right Nothing
+    Right (Just line) -> do
+      -- Successfully read a line, try to parse it
+      case eitherDecodeStrict $ T.encodeUtf8 $ T.pack line of
+        Left err -> return $ Left $ "Failed to decode JSON: " <> T.pack err
+        Right request -> return $ Right $ Just request
+
 
 -- | Send a JSON-RPC response to stdout
 sendResponse :: JsonRpcResponse -> IO ()

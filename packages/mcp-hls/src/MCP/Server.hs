@@ -2,6 +2,7 @@
 
 module MCP.Server where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (catch, SomeException)
 import Control.Monad (forever)
 import Data.ByteString.Lazy.Char8 as L8
@@ -16,17 +17,27 @@ runMCPServer = do
   serverLoop
 
 serverLoop :: IO ()
-serverLoop = forever $ do
-  result <- readMessage
-  case result of
-    Left err -> do
-      System.IO.hPutStrLn stderr $ "JSON parse error: " ++ err
-      let errorResp = createErrorResponse parseError "Parse error" Nothing Nothing
-      sendMessage errorResp
-    Right req -> do
-      System.IO.hPutStrLn stderr $ "Received request: " ++ show (method req)
-      response <- safeProcessRequest req
-      sendMessage response
+serverLoop = do
+  serverLoop'
+  where
+    serverLoop' = do
+      result <- readMessage
+      case result of
+        Left err -> do
+          System.IO.hPutStrLn stderr $ "JSON parse error: " ++ err
+          let errorResp = createErrorResponse parseError "Parse error" Nothing Nothing
+          sendMessage errorResp
+          serverLoop'  -- Continue the loop
+        Right Nothing -> do
+          -- EOF encountered, wait and check again
+          System.IO.hPutStrLn stderr "EOF encountered, waiting for reconnection..."
+          threadDelay 100000  -- Wait 100ms
+          serverLoop'
+        Right (Just req) -> do
+          System.IO.hPutStrLn stderr $ "Received request: " ++ show (method req)
+          response <- safeProcessRequest req
+          sendMessage response
+          serverLoop'  -- Continue the loop
 
 -- Safe request processing with error handling
 safeProcessRequest :: JsonRpcRequest -> IO JsonRpcResponse

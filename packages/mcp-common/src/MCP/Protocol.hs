@@ -3,13 +3,15 @@
 
 module MCP.Protocol where
 
+import Control.Exception (try)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import Data.ByteString.Lazy.Char8 as L8
 import Data.Text (Text)
 import qualified Data.Text as T
 import MCP.Types
-import System.IO (hFlush, stdout, stdin)
+import System.IO (hFlush, stdout, stdin, hIsEOF, hReady)
+import System.IO.Error (isEOFError)
 import Utils.Logging
 
 -- Protocol Error Codes
@@ -56,13 +58,39 @@ sendMessage msg = do
   L8.putStrLn json
   hFlush stdout
 
--- Read JSON-RPC Message from stdin (line-delimited)
-readMessage :: IO (Either String JsonRpcRequest)
+-- Read JSON-RPC Message from stdin with EOF handling (line-delimited)
+readMessage :: IO (Either String (Maybe JsonRpcRequest))
 readMessage = do
-  input <- getLine
-  case eitherDecode (L8.pack input) of
-    Left err -> return $ Left err
-    Right req -> return $ Right req
+  result <- try readLineWithEOF
+  case result of
+    Left ex | isEOFError ex -> return $ Right Nothing
+    Left ex -> return $ Left $ "IO error reading from stdin: " ++ show ex
+    Right Nothing -> return $ Right Nothing
+    Right (Just input) -> do
+      case eitherDecode (L8.pack input) of
+        Left err -> return $ Left err
+        Right req -> return $ Right $ Just req
+
+-- Read a line from stdin with proper EOF handling
+readLineWithEOF :: IO (Maybe String)
+readLineWithEOF = do
+  isEof <- hIsEOF stdin
+  if isEof 
+    then return Nothing
+    else do
+      ready <- hReady stdin
+      if ready
+        then do
+          line <- getLine
+          return $ Just line
+        else do
+          -- Check EOF again before attempting getLine
+          isEof' <- hIsEOF stdin
+          if isEof'
+            then return Nothing
+            else do
+              line <- getLine
+              return $ Just line
 
 -- Handle Initialize Request
 handleInitialize :: InitializeRequest -> Maybe Value -> JsonRpcResponse
