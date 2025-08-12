@@ -231,6 +231,7 @@ handleRequest server request = do
       result <- case methodName of
         "initialize" -> handleInitializeRequest server request
         "initialized" -> handleInitializedNotification server request
+        "notifications/cancelled" -> handleNotificationsCancelledRequest server request
         "tools/call" -> handleToolCallRequest server request
         "tools/list" -> handleToolsListRequest server request
         "resources/list" -> handleResourcesListRequest server request
@@ -269,6 +270,20 @@ handleInitializeRequest server _request = do
 handleInitializedNotification :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
 handleInitializedNotification _server _request = do
   logInfo "Processing initialized notification - server is ready"
+  -- For notifications, we return success but no response body is sent
+  return $ Right $ object []
+
+-- | Handle notifications/cancelled request
+handleNotificationsCancelledRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
+handleNotificationsCancelledRequest _server request = do
+  logInfo "Processing notifications/cancelled request"
+  case params request of
+    Nothing -> logInfo "No parameters in cancelled notification"
+    Just paramValue -> 
+      case fromJSON paramValue :: Result Value of
+        Data.Aeson.Error err -> logWarn $ "Failed to parse cancelled notification params: " <> T.pack err
+        Success cancelData -> do
+          logInfo $ "Request cancelled: " <> T.pack (show cancelData)
   -- For notifications, we return success but no response body is sent
   return $ Right $ object []
 
