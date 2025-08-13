@@ -162,7 +162,7 @@ gracefulShutdown registry router config@ShutdownConfig{..} reason = do
     performGracefulShutdown registry router config
   
   endTime <- getCurrentTime
-  let elapsed = realToFrac $ diffUTCTime endTime startTime
+  let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
   
   case shutdownResult of
     Nothing -> do
