@@ -249,6 +249,12 @@ handleRequest server request = do
 handleInitializeRequest :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
 handleInitializeRequest server _request = do
   logInfo "Processing initialize request"
+  -- WORKAROUND: claude-code client has a bug where it doesn't send the required 
+  -- 'initialized' notification after receiving the initialize response.
+  -- We immediately consider the server ready after sending the initialize response.
+  -- This violates the MCP spec but works around the claude-code client bug.
+  -- See CLAUDE_CODE_MCP_WORKAROUND.md for details.
+  logInfo "Server is ready (workaround: not waiting for initialized notification)"
   return $ Right $ object
     [ "protocolVersion" .= capProtocolVersion (serverCapabilities server)
     , "capabilities" .= object
@@ -269,7 +275,8 @@ handleInitializeRequest server _request = do
 -- | Handle initialized notification (no response needed)
 handleInitializedNotification :: GHCIDServer -> JsonRpcRequest -> IO (Either Text Value)
 handleInitializedNotification _server _request = do
-  logInfo "Processing initialized notification - server is ready"
+  logInfo "Processing initialized notification - server is ready (compliant client)"
+  -- This is the proper MCP protocol flow, but claude-code doesn't send this notification
   -- Return success for notification processing (actual response decision is made in handleRequest)
   return $ Right $ object []
 
