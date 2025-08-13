@@ -22,8 +22,11 @@ common warnings
 library
     import:           warnings
     exposed-modules:  
+        -- Build information
+        BuildInfo
+        
         -- GHCID-specific modules
-        GHCID.Client
+      , GHCID.Client
       , GHCID.Output
       , GHCID.Config
       , GHCID.Filter
@@ -45,6 +48,7 @@ library
       , text >= 1.2
       , bytestring >= 0.10
       , process >= 1.6
+      , template-haskell >= 2.16
       , typed-process >= 0.2
       , directory >= 1.3
       , filepath >= 1.4

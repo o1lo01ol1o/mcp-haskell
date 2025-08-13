@@ -9,6 +9,7 @@ import Control.Exception (bracket)
 import Data.Text (Text)
 import qualified Data.Text as T
 
+import BuildInfo (gitCommitHash, gitCommitDate, gitBranch, gitIsDirty)
 import MCP.Server.GHCID (runGHCIDServer)
 import GHCID.Config (defaultServerConfig, GHCIDServerConfig(..), loadConfig)
 import GHCID.Signals (withGracefulShutdown, defaultShutdownConfig, ShutdownConfig(..))
@@ -36,6 +37,7 @@ runWithDefaultConfig = do
   
   logInfo "Starting MCP-GHCID server with default configuration"
   logInfo $ "Working directory: " <> T.pack (show currentDir)
+  logBuildInfo
   
   runServerWithResources config
 
@@ -131,6 +133,13 @@ showHelp = putStrLn $ unlines
   , "  mcp-ghcid --config ~/.config/mcp-ghcid/config.json"
   ]
 
+-- | Log build information for debugging
+logBuildInfo :: IO ()
+logBuildInfo = do
+  logInfo $ "Built from git commit: " <> T.pack gitCommitHash <> if gitIsDirty then " (dirty)" else ""
+  logInfo $ "Git branch: " <> T.pack gitBranch
+  logInfo $ "Build date: " <> T.pack gitCommitDate
+
 -- | Show version information
 showVersion :: IO ()
 showVersion = putStrLn $ unlines
@@ -140,6 +149,9 @@ showVersion = putStrLn $ unlines
   , "Built with:"
   , "  - GHC 9.8.4"
   , "  - MCP Protocol v2025-06-18"
+  , "  - Git commit: " ++ gitCommitHash ++ if gitIsDirty then " (dirty)" else ""
+  , "  - Git branch: " ++ gitBranch
+  , "  - Build date: " ++ gitCommitDate
   , ""
   , "Copyright (c) 2025 o1lo01ol1o"
   , "Licensed under MIT License"
