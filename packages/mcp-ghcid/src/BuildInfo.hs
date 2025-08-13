@@ -1,4 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module BuildInfo where
 
 import Language.Haskell.TH
@@ -6,27 +7,35 @@ import System.Process
 import System.Exit
 import Control.Exception (try, SomeException)
 
--- | Safely run git command, returning "unknown" if git is not available
-safeGitCommand :: [String] -> Q String
-safeGitCommand args = do
-  result <- runIO $ try $ readProcessWithExitCode "git" args ""
-  case result of
-    Left (_ :: SomeException) -> return "unknown"
-    Right (ExitSuccess, output, _) -> return (filter (/= '\n') output)
-    Right (_, _, _) -> return "unknown"
-
 -- | Git commit hash embedded at compile time
 gitCommitHash :: String
-gitCommitHash = $(safeGitCommand ["rev-parse", "HEAD"] >>= \hash -> 
-  stringE (take 12 hash))
+gitCommitHash = $(do
+  result <- runIO $ try $ readProcessWithExitCode "git" ["rev-parse", "HEAD"] ""
+  case result of
+    Left (_ :: SomeException) -> stringE "unknown"
+    Right (ExitSuccess, output, _) -> stringE (take 12 $ filter (/= '\n') output)
+    Right (_, _, _) -> stringE "unknown"
+  )
 
 -- | Git commit date embedded at compile time  
 gitCommitDate :: String
-gitCommitDate = $(safeGitCommand ["show", "-s", "--format=%ci", "HEAD"] >>= stringE)
+gitCommitDate = $(do
+  result <- runIO $ try $ readProcessWithExitCode "git" ["show", "-s", "--format=%ci", "HEAD"] ""
+  case result of
+    Left (_ :: SomeException) -> stringE "unknown"
+    Right (ExitSuccess, output, _) -> stringE (filter (/= '\n') output)
+    Right (_, _, _) -> stringE "unknown"
+  )
 
 -- | Git branch embedded at compile time
 gitBranch :: String
-gitBranch = $(safeGitCommand ["rev-parse", "--abbrev-ref", "HEAD"] >>= stringE)
+gitBranch = $(do
+  result <- runIO $ try $ readProcessWithExitCode "git" ["rev-parse", "--abbrev-ref", "HEAD"] ""
+  case result of
+    Left (_ :: SomeException) -> stringE "unknown"
+    Right (ExitSuccess, output, _) -> stringE (filter (/= '\n') output)
+    Right (_, _, _) -> stringE "unknown"
+  )
 
 -- | Whether the build was from a dirty working tree
 gitIsDirty :: Bool
