@@ -122,8 +122,6 @@ handleShutdownSignal GHCIDSignalHandler{..} sig = do
   
   -- Start graceful shutdown process
   void $ forkIO $ gracefulShutdown signalRegistry signalRouter signalConfig (SignalShutdown sig)
-  where
-    getCurrentTime = Data.Time.getCurrentTime
 
 -- | Get human-readable signal name
 getSignalName :: Signal -> Text
@@ -176,7 +174,6 @@ gracefulShutdown registry router config@ShutdownConfig{..} reason = do
         logInfo $ "Graceful shutdown completed in " <> T.pack (show elapsed) <> " seconds"
       exitWith shutdownExitCode
   where
-    getCurrentTime = Data.Time.getCurrentTime
     -- diffUTCTime already imported
     timeout = System.Timeout.timeout
 
@@ -241,8 +238,6 @@ signalSafeLog msg = do
   void $ try @SomeException $ do
     hPutStrLn stderr $ timeStr ++ " [SIGNAL] " ++ T.unpack msg
     hFlush stderr
-  where
-    getCurrentTime = Data.Time.getCurrentTime
 
 -- | Signal-safe cleanup operations
 signalSafeCleanup :: Maybe ProcessRegistry -> Maybe GHCIDRouter -> IO ()
