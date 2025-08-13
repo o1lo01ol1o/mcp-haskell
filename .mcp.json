@@ -11,7 +11,7 @@
     },
     "ghcid": {
       "type": "stdio",
-      "command": "/Users/timpierson/Work/mcp-hls/result/bin/mcp-ghcid",
+      "command": "/nix/store/mzqz65493ji6qqg36scckcaqssz0j36v-mcp-ghcid-0.1.0.0/bin/mcp-ghcid",
       "args": [],
       "env": {},
       "description": "GHCID integration for continuous Haskell compilation monitoring"
