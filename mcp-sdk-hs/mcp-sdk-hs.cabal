@@ -1,0 +1,77 @@
+cabal-version: 2.4
+name: mcp-sdk-hs
+version: 0.1.0.0
+synopsis: Model Context Protocol (MCP) SDK for Haskell
+description:
+  A complete Haskell implementation of the Model Context Protocol (MCP)
+  using GADTs for type-safe request/response handling.
+  .
+  Features:
+  * GADT-based request/response type safety
+  * JSON-RPC 2.0 transport
+  * Stdio transport implementation
+  * Client and server APIs
+  * Comprehensive error handling
+
+license: MIT
+author: MCP SDK Contributors
+maintainer: maintainer@example.com
+category: Network
+build-type: Simple
+
+common warnings
+    ghc-options: -Wall
+
+library
+    import: warnings
+    exposed-modules:
+        MCP.SDK.Capabilities
+        MCP.SDK.Client
+        MCP.SDK.Error
+        MCP.SDK.Protocol
+        MCP.SDK.Request
+        MCP.SDK.Server
+        MCP.SDK.Server.API
+        MCP.SDK.Server.Auth
+        MCP.SDK.Server.Middleware
+        MCP.SDK.Server.Monad
+        MCP.SDK.Server.State
+        MCP.SDK.Transport
+        MCP.SDK.Types
+        MCP.SDK.Types.Auth
+    hs-source-dirs: lib
+    default-language: Haskell2010
+    build-depends:
+        base >= 4.14 && < 5,
+        aeson >= 2.0,
+        bytestring,
+        text,
+        unordered-containers,
+        vector,
+        mtl,
+        transformers,
+        async,
+        stm,
+        stm-containers >= 1.2,
+        time,
+        uuid,
+        scientific,
+        containers,
+        hashable,
+        monad-logger >= 0.3,
+        fast-logger >= 3.0,
+        exceptions >= 0.10,
+        safe-exceptions >= 0.1
+
+-- test-suite mcp-sdk-hs-test
+--     import: warnings
+--     default-language: Haskell2010
+--     type: exitcode-stdio-1.0
+--     hs-source-dirs: test
+--     main-is: Spec.hs
+--     build-depends:
+--         base,
+--         mcp-sdk-hs,
+--         hspec,
+--         QuickCheck,
+--         aeson
