@@ -4,6 +4,7 @@
 packages: packages/mcp-common
         , packages/mcp-hls  
         , packages/mcp-ghcid
+        , mcp-sdk-hs
 
 -- Reference implementations (submodules) at top level
 -- optional-packages: haskell-language-server
