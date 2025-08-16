@@ -1,44 +1,42 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module GHCID.Signals
   ( -- * Signal Handling
-    GHCIDSignalHandler(..)
-  , installGHCIDSignalHandlers
-  , waitForShutdownSignal
-  , gracefulShutdown
-  , forceShutdown
-  
+    GHCIDSignalHandler (..),
+    installGHCIDSignalHandlers,
+    waitForShutdownSignal,
+    gracefulShutdown,
+    forceShutdown,
+
     -- * Shutdown Management
-  , ShutdownReason(..)
-  , ShutdownConfig(..)
-  , defaultShutdownConfig
-  , withGracefulShutdown
-  
+    ShutdownReason (..),
+    ShutdownConfig (..),
+    defaultShutdownConfig,
+    withGracefulShutdown,
+
     -- * Signal-Safe Operations
-  , signalSafeLog
-  , signalSafeCleanup
-  ) where
+    signalSafeLog,
+    signalSafeCleanup,
+  )
+where
 
 import Control.Concurrent
+import qualified Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try, bracket_, finally, mask_)
-import Control.Monad (void, when, unless)
+import Control.Exception (SomeException, finally, try)
+import Control.Monad (unless, void, when)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import System.Exit (exitWith, ExitCode(ExitSuccess, ExitFailure))
-import System.Posix.Signals
-import System.IO (stderr, stdout, hPutStrLn, hFlush)
-import Data.Time (getCurrentTime, UTCTime, diffUTCTime)
-import qualified System.Timeout
-import qualified Control.Concurrent.Async
-
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 -- Internal imports
 import GHCID.ProcessRegistry (ProcessRegistry, shutdownProcessRegistry)
-import MCP.Router.GHCID (GHCIDRouter, shutdownGHCIDRouter)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
+import System.IO (hFlush, hPutStrLn, stderr, stdout)
+import System.Posix.Signals
+import qualified System.Timeout
 import Utils.Logging
 
 -- | Reasons for shutdown
@@ -51,84 +49,85 @@ data ShutdownReason
 
 -- | Shutdown configuration
 data ShutdownConfig = ShutdownConfig
-  { shutdownGracePeriod :: Int      -- seconds to allow for graceful shutdown
-  , shutdownForceDelay :: Int       -- additional seconds before forced termination
-  , shutdownLogOutput :: Bool       -- whether to log shutdown progress
-  , shutdownExitCode :: ExitCode    -- exit code to use
-  } deriving (Show, Eq)
+  { shutdownGracePeriod :: Int, -- seconds to allow for graceful shutdown
+    shutdownForceDelay :: Int, -- additional seconds before forced termination
+    shutdownLogOutput :: Bool, -- whether to log shutdown progress
+    shutdownExitCode :: ExitCode -- exit code to use
+  }
+  deriving (Show, Eq)
 
 -- | Default shutdown configuration
 defaultShutdownConfig :: ShutdownConfig
-defaultShutdownConfig = ShutdownConfig
-  { shutdownGracePeriod = 30
-  , shutdownForceDelay = 10
-  , shutdownLogOutput = True
-  , shutdownExitCode = ExitSuccess
-  }
+defaultShutdownConfig =
+  ShutdownConfig
+    { shutdownGracePeriod = 30,
+      shutdownForceDelay = 10,
+      shutdownLogOutput = True,
+      shutdownExitCode = ExitSuccess
+    }
 
 -- | Signal handler for GHCID applications
 data GHCIDSignalHandler = GHCIDSignalHandler
-  { signalShutdownVar :: TVar Bool
-  , signalReasonVar :: TVar (Maybe ShutdownReason)
-  , signalReceivedTime :: TVar (Maybe UTCTime)
-  , signalRegistry :: Maybe ProcessRegistry
-  , signalRouter :: Maybe GHCIDRouter
-  , signalConfig :: ShutdownConfig
+  { signalShutdownVar :: TVar Bool,
+    signalReasonVar :: TVar (Maybe ShutdownReason),
+    signalReceivedTime :: TVar (Maybe UTCTime),
+    signalRegistry :: Maybe ProcessRegistry,
+    signalConfig :: ShutdownConfig
   }
 
 -- | Install signal handlers for GHCID application
-installGHCIDSignalHandlers :: Maybe ProcessRegistry 
-                           -> Maybe GHCIDRouter 
-                           -> ShutdownConfig 
-                           -> IO GHCIDSignalHandler
-installGHCIDSignalHandlers registry router config = do
+installGHCIDSignalHandlers ::
+  Maybe ProcessRegistry ->
+  ShutdownConfig ->
+  IO GHCIDSignalHandler
+installGHCIDSignalHandlers registry config = do
   shutdownVar <- newTVarIO False
   reasonVar <- newTVarIO Nothing
   timeVar <- newTVarIO Nothing
-  
-  let handler = GHCIDSignalHandler
-        { signalShutdownVar = shutdownVar
-        , signalReasonVar = reasonVar
-        , signalReceivedTime = timeVar
-        , signalRegistry = registry
-        , signalRouter = router
-        , signalConfig = config
-        }
-  
+
+  let handler =
+        GHCIDSignalHandler
+          { signalShutdownVar = shutdownVar,
+            signalReasonVar = reasonVar,
+            signalReceivedTime = timeVar,
+            signalRegistry = registry,
+            signalConfig = config
+          }
+
   -- Install signal handlers
   void $ installHandler sigTERM (Catch $ handleShutdownSignal handler sigTERM) Nothing
   void $ installHandler sigINT (Catch $ handleShutdownSignal handler sigINT) Nothing
   void $ installHandler sigHUP (Catch $ handleShutdownSignal handler sigHUP) Nothing
   void $ installHandler sigQUIT (Catch $ handleShutdownSignal handler sigQUIT) Nothing
-  
+
   when (shutdownLogOutput config) $
     logInfo "GHCID signal handlers installed (SIGTERM, SIGINT, SIGHUP, SIGQUIT)"
-  
+
   return handler
 
 -- | Handle shutdown signals
 handleShutdownSignal :: GHCIDSignalHandler -> Signal -> IO ()
-handleShutdownSignal GHCIDSignalHandler{..} sig = do
+handleShutdownSignal GHCIDSignalHandler {..} sig = do
   now <- getCurrentTime
-  
+
   -- Record the shutdown signal
   atomically $ do
     writeTVar signalShutdownVar True
     writeTVar signalReasonVar (Just $ SignalShutdown sig)
     writeTVar signalReceivedTime (Just now)
-  
+
   -- Log the signal (using signal-safe logging)
   signalSafeLog $ "Received signal: " <> getSignalName sig
-  
+
   -- Start graceful shutdown process
-  void $ forkIO $ gracefulShutdown signalRegistry signalRouter signalConfig (SignalShutdown sig)
+  void $ forkIO $ gracefulShutdown signalRegistry signalConfig (SignalShutdown sig)
 
 -- | Get human-readable signal name
 getSignalName :: Signal -> Text
 getSignalName sig
   | sig == sigTERM = "SIGTERM"
-  | sig == sigINT  = "SIGINT"
-  | sig == sigHUP  = "SIGHUP"
+  | sig == sigINT = "SIGINT"
+  | sig == sigHUP = "SIGHUP"
   | sig == sigQUIT = "SIGQUIT"
   | sig == sigUSR1 = "SIGUSR1"
   | sig == sigUSR2 = "SIGUSR2"
@@ -136,7 +135,7 @@ getSignalName sig
 
 -- | Wait for a shutdown signal
 waitForShutdownSignal :: GHCIDSignalHandler -> IO ShutdownReason
-waitForShutdownSignal GHCIDSignalHandler{..} = do
+waitForShutdownSignal GHCIDSignalHandler {..} = do
   atomically $ do
     shutdown <- readTVar signalShutdownVar
     unless shutdown retry
@@ -146,54 +145,50 @@ waitForShutdownSignal GHCIDSignalHandler{..} = do
       Just r -> return r
 
 -- | Perform graceful shutdown
-gracefulShutdown :: Maybe ProcessRegistry 
-                 -> Maybe GHCIDRouter 
-                 -> ShutdownConfig 
-                 -> ShutdownReason 
-                 -> IO ()
-gracefulShutdown registry router config@ShutdownConfig{..} reason = do
+gracefulShutdown ::
+  Maybe ProcessRegistry ->
+  ShutdownConfig ->
+  ShutdownReason ->
+  IO ()
+gracefulShutdown registry config@ShutdownConfig {..} reason = do
   when shutdownLogOutput $
-    logInfo $ "Starting graceful shutdown due to: " <> T.pack (show reason)
-  
+    logInfo $
+      "Starting graceful shutdown due to: " <> T.pack (show reason)
+
   startTime <- getCurrentTime
-  
+
   -- Start shutdown with timeout
   shutdownResult <- timeout (shutdownGracePeriod * 1000000) $ do
-    performGracefulShutdown registry router config
-  
+    performGracefulShutdown registry config
+
   endTime <- getCurrentTime
   let elapsed = realToFrac (diffUTCTime endTime startTime) :: Double
-  
+
   case shutdownResult of
     Nothing -> do
       when shutdownLogOutput $
-        logWarn $ "Graceful shutdown timed out after " <> T.pack (show shutdownGracePeriod) <> " seconds"
-      forceShutdown registry router config reason
+        logWarn $
+          "Graceful shutdown timed out after " <> T.pack (show shutdownGracePeriod) <> " seconds"
+      forceShutdown registry config reason
     Just _ -> do
       when shutdownLogOutput $
-        logInfo $ "Graceful shutdown completed in " <> T.pack (show elapsed) <> " seconds"
+        logInfo $
+          "Graceful shutdown completed in " <> T.pack (show elapsed) <> " seconds"
       exitWith shutdownExitCode
   where
     -- diffUTCTime already imported
     timeout = System.Timeout.timeout
 
 -- | Perform the actual graceful shutdown steps
-performGracefulShutdown :: Maybe ProcessRegistry -> Maybe GHCIDRouter -> ShutdownConfig -> IO ()
-performGracefulShutdown registry router ShutdownConfig{..} = do
-  -- Step 1: Stop accepting new requests (shutdown router)
-  case router of
-    Nothing -> return ()
-    Just r -> do
-      when shutdownLogOutput $ logInfo "Shutting down MCP router"
-      shutdownGHCIDRouter r
-  
-  -- Step 2: Stop all GHCID processes (shutdown registry)
+performGracefulShutdown :: Maybe ProcessRegistry -> ShutdownConfig -> IO ()
+performGracefulShutdown registry ShutdownConfig {..} = do
+  -- Step 1: Stop all GHCID processes (shutdown registry)
   case registry of
     Nothing -> return ()
     Just reg -> do
       when shutdownLogOutput $ logInfo "Shutting down process registry"
       shutdownProcessRegistry reg
-  
+
   -- Step 3: Final cleanup
   when shutdownLogOutput $ logInfo "Performing final cleanup"
   performFinalCleanup
@@ -205,27 +200,28 @@ performFinalCleanup = do
   void $ try @SomeException $ do
     hFlush stdout
     hFlush stderr
-  
+
   -- Brief delay to ensure cleanup completion
   threadDelay 100000 -- 100ms
 
 -- | Force shutdown when graceful shutdown fails
-forceShutdown :: Maybe ProcessRegistry 
-              -> Maybe GHCIDRouter 
-              -> ShutdownConfig 
-              -> ShutdownReason 
-              -> IO ()
-forceShutdown registry router ShutdownConfig{..} reason = do
+forceShutdown ::
+  Maybe ProcessRegistry ->
+  ShutdownConfig ->
+  ShutdownReason ->
+  IO ()
+forceShutdown registry ShutdownConfig {..} reason = do
   when shutdownLogOutput $
-    logWarn $ "Forcing shutdown due to: " <> T.pack (show reason)
-  
+    logWarn $
+      "Forcing shutdown due to: " <> T.pack (show reason)
+
   -- Give a brief moment for forced cleanup
   void $ timeout (shutdownForceDelay * 1000000) $ do
-    signalSafeCleanup registry router
-  
+    signalSafeCleanup registry
+
   when shutdownLogOutput $
     logError "Forced shutdown complete"
-  
+
   exitWith (ExitFailure 130) -- 128 + SIGINT
   where
     timeout = System.Timeout.timeout
@@ -240,40 +236,33 @@ signalSafeLog msg = do
     hFlush stderr
 
 -- | Signal-safe cleanup operations
-signalSafeCleanup :: Maybe ProcessRegistry -> Maybe GHCIDRouter -> IO ()
-signalSafeCleanup registry router = do
-  -- Attempt emergency cleanup without error handling
-  void $ try @SomeException $ do
-    case router of
-      Nothing -> return ()
-      Just r -> shutdownGHCIDRouter r
-  
+signalSafeCleanup :: Maybe ProcessRegistry -> IO ()
+signalSafeCleanup registry = do
   void $ try @SomeException $ do
     case registry of
       Nothing -> return ()
       Just reg -> shutdownProcessRegistry reg
 
 -- | Run an action with graceful shutdown handling
-withGracefulShutdown :: ShutdownConfig 
-                     -> Maybe ProcessRegistry 
-                     -> Maybe GHCIDRouter 
-                     -> IO a 
-                     -> IO a
-withGracefulShutdown config registry router action = do
-  handler <- installGHCIDSignalHandlers registry router config
-  
+withGracefulShutdown ::
+  ShutdownConfig ->
+  Maybe ProcessRegistry ->
+  IO a ->
+  IO a
+withGracefulShutdown config registry action = do
+  handler <- installGHCIDSignalHandlers registry config
+
   -- Fork a thread to monitor for shutdown signals
   shutdownMonitor <- async $ do
     reason <- waitForShutdownSignal handler
-    gracefulShutdown registry router config reason
-  
+    gracefulShutdown registry config reason
+
   -- Run the main action
   result <- action `finally` cancel shutdownMonitor
-  
+
   -- Cancel the shutdown monitor if we complete normally
   cancel shutdownMonitor
   return result
   where
     async = Control.Concurrent.Async.async
     cancel = Control.Concurrent.Async.cancel
-
