@@ -25,9 +25,9 @@ import GHCID.Config (GHCIDServerConfig (..))
 import GHCID.ProcessRegistry (ProcessRegistry, createProcessRegistry)
 import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ToolsCapability (..), buildServerCapabilities)
 import MCP.SDK.Error (MCPError (..))
-import MCP.SDK.Server
+import qualified MCP.SDK.Server as Server
 import MCP.SDK.Server.API (registerTool)
-import MCP.SDK.Server.Monad (ServerM, runServerM)
+import MCP.SDK.Server.Monad (ServerConfig (..), ServerM, runServerM)
 import MCP.SDK.Transport (wrapTransport)
 import MCP.SDK.Transport.Stdio (createStdioTransport)
 import MCP.SDK.Types hiding (serverName, serverVersion)
@@ -64,14 +64,19 @@ runGHCIDServer config = do
     transport <- liftIO $ createStdioTransport stdin stdout
 
     -- Build server with SDK
+    let sdkConfig =
+          Server.defaultServerConfig
+            { serverInstructions = Just (instructionsMessage config)
+            }
+
     serverResult <-
       liftIO $
-        finalizeServer $
-          withServerConfig defaultServerConfig $
-            withServerCapabilities createServerCapabilities $
-              withServerInfo (serverName config) (serverVersion config) $
-                withServerTransport (wrapTransport transport) $
-                  buildServer
+        Server.finalizeServer $
+          Server.withServerConfig sdkConfig $
+            Server.withServerCapabilities createServerCapabilities $
+              Server.withServerInfo (serverName config) (serverVersion config) $
+                Server.withServerTransport (wrapTransport transport) $
+                  Server.buildServer
 
     case serverResult of
       Left err -> throw err
@@ -80,7 +85,7 @@ runGHCIDServer config = do
         liftIO $ runServerM serverEnv $ registerGHCIDTools ghcidState
 
         -- Run the server
-        liftIO $ runServer serverEnv
+        liftIO $ Server.runServer serverEnv
   case result of
     Left mcpError -> do
       Log.logError $ "GHCID MCP server failed: " <> T.pack (show mcpError)

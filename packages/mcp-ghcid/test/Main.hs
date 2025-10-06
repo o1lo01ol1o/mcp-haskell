@@ -12,6 +12,7 @@ import qualified GHCID.FilterSpec
 import qualified GHCID.OutputSpec
 import qualified GHCID.ProcessRegistrySpec
 import qualified GHCID.ResourceLeakSpec
+import qualified MCP.GHCIDIntegrationSpec
 import qualified MCP.GHCIDToolsSpec
 import qualified MCP.Types.GHCIDSpec
 import System.Environment (lookupEnv)
@@ -94,6 +95,7 @@ runComprehensiveTests = do
       GHCID.ClientSpec.spec
       GHCID.ProcessRegistrySpec.spec
       MCP.GHCIDToolsSpec.spec
+      MCP.GHCIDIntegrationSpec.spec
       -- MCP.Router.GHCIDSpec.spec
 
       -- Advanced tests (resource management and concurrency)

@@ -26,5 +26,6 @@ defaultServerConfig = pure $ ObeliskServerConfig
       [ "Use `obelisk.start` to start or restart `ob watch` for your project."
       , "Changes to `.cabal` files require running `obelisk.start` again."
       , "Changes to the Nix environment require restarting the `mcp-obelisk` server."
+      , "Use `obelisk.messages` filter options (grep/head/tail/lines) to focus on specific output."
       ]
   }

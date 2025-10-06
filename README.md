@@ -8,6 +8,7 @@ This project provides two main MCP servers:
 
 - **mcp-hls**: Integration with Haskell Language Server (HLS)
 - **mcp-ghcid**: Integration with GHCID for continuous compilation
+- **mcp-obelisk**: Integration with `ob watch` for Obelisk applications
 
 ## Quick Start
 
@@ -110,16 +111,77 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - Real-time compilation feedback
 - Compiler error and warning reporting
 - Process management with graceful shutdown
-- Comprehensive filtering and message formatting
+- Comprehensive filtering and message formatting (`output` + `lines` are returned)
 
 **Available MCP Tools:**
-- `ghcid.start` - Start a new ghcid process for a project
-- `ghcid.stop` - Stop a running ghcid process  
-- `ghcid.restart` - Restart a ghcid process
-- `ghcid.status` - Get status of a ghcid process
-- `ghcid.messages` - Get compiler messages from ghcid
-- `ghcid.clear` - Clear messages from a ghcid process
-- `ghcid.list` - List all active ghcid processes
+- `ghcid.start` – Start a new ghcid process for a project
+- `ghcid.stop` – Stop a running ghcid process  
+- `ghcid.restart` – Restart a ghcid process
+- `ghcid.status` – Get status of a ghcid process
+- `ghcid.messages` – Get compiler messages from ghcid (supports filtering)
+- `ghcid.clear` – Clear messages from a ghcid process
+- `ghcid.list` – List all active ghcid processes
+
+**Message filtering**
+
+`ghcid.messages` accepts an optional `filter` object allowing servers or clients to focus on relevant diagnostics.
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "tools/call",
+  "params": {
+    "name": "ghcid.messages",
+    "arguments": {
+      "cabalURI": "file:///path/to/project",
+      "count": 80,
+      "filter": { "grep": "All good" }
+    }
+  }
+}
+```
+
+Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request). Responses include `"output"` (full text) and `"lines"` (array of individual lines) so downstream tools can display or post-process easily.
+
+### mcp-obelisk
+
+An MCP server that wraps `ob watch` for Obelisk projects.
+
+**Features:**
+- Start/stop/restart `ob watch` processes (restarts are implicit via `obelisk.start`)
+- Structured status reporting (`running`, `starting`, `errored`, etc.)
+- Log streaming with the same filtering options as `mcp-ghcid`
+- Instructional guidance returned during `initialize`
+
+**Available MCP Tools:**
+- `obelisk.start` – Start or restart `ob watch`
+- `obelisk.stop` – Stop `ob watch`
+- `obelisk.status` – Get current status (including last log line)
+- `obelisk.messages` – Fetch recent log output (supports filters)
+- `obelisk.list` – List active Obelisk projects managed by the server
+
+**Message filtering**
+
+`obelisk.messages` exposes the same filter schema as `ghcid.messages`. Example request:
+
+```jsonc
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "tools/call",
+  "params": {
+    "name": "obelisk.messages",
+    "arguments": {
+      "projectPath": "/path/to/obelisk-app",
+      "limit": 120,
+      "filter": { "tail": 20 }
+    }
+  }
+}
+```
+
+The response mirrors the `mcp-ghcid` format, returning both `output` and `lines` fields so clients can quickly surface relevant log fragments.
 
 ### mcp-hls
 

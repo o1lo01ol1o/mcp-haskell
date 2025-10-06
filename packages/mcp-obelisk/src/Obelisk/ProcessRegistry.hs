@@ -26,6 +26,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time (UTCTime, getCurrentTime)
+import Obelisk.Filter (FilterRequest, applyShellFilter)
 import Obelisk.Types
 import System.Directory (doesDirectoryExist)
 import System.IO (Handle, hClose, hIsEOF)
@@ -118,8 +119,8 @@ getObeliskStatus (ProcessRegistry registryVar) projectId = do
     Nothing -> pure ObStopped
     Just ObeliskHandle {..} -> readTVarIO ohStatus
 
-getObeliskMessages :: ProcessRegistry -> ProjectId -> Maybe Int -> IO (Either Text MessagesResult)
-getObeliskMessages (ProcessRegistry registryVar) projectId mCount = do
+getObeliskMessages :: ProcessRegistry -> ProjectId -> Maybe Int -> Maybe FilterRequest -> IO (Either Text MessagesResult)
+getObeliskMessages (ProcessRegistry registryVar) projectId mCount mFilter = do
   registry <- readTVarIO registryVar
   case Map.lookup projectId registry of
     Nothing -> pure $ Left "ob watch not running for project"
@@ -128,7 +129,16 @@ getObeliskMessages (ProcessRegistry registryVar) projectId mCount = do
       now <- getCurrentTime
       let totalLines = toList linesSeq
           selected = maybe totalLines (\n -> reverse (take n (reverse totalLines))) mCount
-      pure $ Right $ MessagesResult selected now
+          baseOutput = T.unlines selected
+      case mFilter of
+        Nothing -> pure $ Right $ MessagesResult baseOutput selected now
+        Just filterReq -> do
+          filtered <- applyShellFilter baseOutput filterReq
+          case filtered of
+            Left err -> pure $ Left err
+            Right filteredOutput ->
+              let filteredLines = T.lines filteredOutput
+              in pure $ Right $ MessagesResult filteredOutput filteredLines now
 
 getLastLogLine :: ProcessRegistry -> ProjectId -> IO (Maybe Text)
 getLastLogLine (ProcessRegistry registryVar) projectId = do

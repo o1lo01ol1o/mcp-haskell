@@ -5,23 +5,28 @@
 
 module Test.Utils where
 
-import Control.Concurrent (threadDelay, ThreadId)
+import Control.Concurrent (ThreadId, threadDelay)
 import Control.Concurrent.MVar
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (when, filterM)
+import Control.Monad (filterM, forM, unless, when)
 import Test.Hspec (expectationFailure)
 import Data.Aeson
+import Data.Aeson.Types (parseEither, parseMaybe)
 import qualified Data.ByteString.Lazy.Char8 as L8
-import Data.Maybe (isNothing, fromMaybe)
+import Data.Char (isSpace)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Directory (getCurrentDirectory, findExecutable)
-import System.Environment (lookupEnv)
-import System.FilePath ((</>))
-import System.IO (BufferMode(..), Handle, hClose, hFlush, hGetLine, hPutStrLn, hSetBuffering)
+import qualified Data.Vector as V
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, findExecutable, getCurrentDirectory, listDirectory)
+import System.Environment (getEnvironment, lookupEnv)
+import System.FilePath ((</>), takeDirectory, takeFileName)
+import System.IO (BufferMode (..), Handle, hClose, hFlush, hGetLine, hPutStrLn, hSetBuffering, stderr)
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Process (CreateProcess(..), ProcessHandle, StdStream(..), createProcess, getProcessExitCode, proc, terminateProcess)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, getProcessExitCode, proc, terminateProcess)
+import qualified System.Process.Typed as PT
+import System.Exit (ExitCode (..))
 import System.Timeout (timeout)
 
 -- Production imports from GHCID library
@@ -108,6 +113,7 @@ withTestHaskellProject files action = withSystemTempDirectory "ghcid-test" $ \tm
   where
     createTestFile dir (path, content) = do
       let fullPath = dir </> path
+      createDirectoryIfMissing True (takeDirectory fullPath)
       writeFile fullPath content
     
     defaultCAbalFile = unlines
@@ -137,31 +143,62 @@ instance Show MCPGHCIDServer where
 -- | Discover MCP GHCID executable dynamically
 findMCPGHCIDExecutable :: IO (Maybe FilePath)
 findMCPGHCIDExecutable = do
-  -- Try environment variable first
-  envPath <- lookupEnv "MCP_GHCID_EXECUTABLE"
-  case envPath of
-    Just path -> return $ Just path
-    Nothing -> do
-      -- Try to find in PATH
-      pathResult <- findExecutable "mcp-ghcid"
-      case pathResult of
-        Just path -> return $ Just path
-        Nothing -> do
-          -- Try common build locations
-          currentDir <- getCurrentDirectory
-          let commonPaths =
-                [ currentDir </> "dist-newstyle/build/aarch64-osx/ghc-9.8.4/mcp-ghcid-0.1.0.0/x/mcp-ghcid/build/mcp-ghcid/mcp-ghcid"
-                , currentDir </> "dist-newstyle/build/x86_64-linux/ghc-9.8.4/mcp-ghcid-0.1.0.0/x/mcp-ghcid/build/mcp-ghcid/mcp-ghcid"
-                , currentDir </> "dist-newstyle/build/x86_64-osx/ghc-9.8.4/mcp-ghcid-0.1.0.0/x/mcp-ghcid/build/mcp-ghcid/mcp-ghcid"
-                ]
-          findFirstExisting commonPaths
+  envOverride <- lookupEnv "MCP_GHCID_EXECUTABLE"
+  case envOverride of
+    Just manual | not (null manual) -> do
+      exists <- doesFileExist manual
+      pure $ if exists then Just manual else Nothing
+    _ -> do
+      envVars <- getEnvironment
+      packageDir <- getCurrentDirectory
+      let repoRoot = takeDirectory $ takeDirectory packageDir
+          cabalDir = repoRoot </> "dist-newstyle" </> "tmp"
+          cabalEnv = ("CABAL_DIR", cabalDir) : filter ((/= "CABAL_DIR") . fst) envVars
+          cabalProc args =
+            PT.setEnv cabalEnv
+              $ PT.setWorkingDir repoRoot
+              $ PT.proc "cabal" args
+
+      createDirectoryIfMissing True cabalDir
+
+      buildResult <- try @SomeException $ PT.runProcess (cabalProc ["build", "exe:mcp-ghcid"])
+      case buildResult of
+        Left _ -> searchFallback repoRoot
+        Right _ -> do
+          attempt <- try @SomeException $ PT.readProcess (cabalProc ["list-bin", "exe:mcp-ghcid"])
+          case attempt of
+            Right (ExitSuccess, stdoutBs, _) -> do
+              let textOut = T.pack (L8.unpack stdoutBs)
+                  candidates = map T.unpack
+                    $ reverse
+                    $ filter (not . T.null)
+                    $ map T.strip (T.lines textOut)
+              firstExisting candidates >>= maybe (searchFallback repoRoot) (pure . Just)
+            _ -> searchFallback repoRoot
   where
-    findFirstExisting [] = return Nothing
-    findFirstExisting (path:paths) = do
-      exists <- findExecutable path
-      case exists of
-        Just _ -> return $ Just path
-        Nothing -> findFirstExisting paths
+    firstExisting [] = pure Nothing
+    firstExisting (path:rest) = do
+      exists <- doesFileExist path
+      if exists
+        then pure (Just path)
+        else firstExisting rest
+
+    searchFallback root = do
+      distPaths <- findBinaries (root </> "dist-newstyle")
+      firstExisting distPaths
+
+    findBinaries dir = do
+      exists <- doesDirectoryExist dir
+      if not exists
+        then pure []
+        else do
+          entries <- listDirectory dir
+          fmap concat . forM entries $ \entry -> do
+            let full = dir </> entry
+            isDir <- doesDirectoryExist full
+            if isDir
+              then findBinaries full
+              else pure [full | takeFileName full == "mcp-ghcid"]
 
 -- | Start MCP GHCID server for testing
 withMCPGHCIDServer :: FilePath -> (MCPGHCIDServer -> IO a) -> IO (Either Text a)
@@ -309,3 +346,196 @@ checkResourceLeaks ResourceTracker{..} = do
   
   return $ null activeProcesses && null files && null threads
 
+-- Integration testing helpers (mirrors mcp-obelisk utilities)
+withMCPGhcidServer :: FilePath -> ((Handle, Handle) -> IO a) -> IO a
+withMCPGhcidServer execPath action =
+  bracket start stop $ \(_, handles) -> action handles
+  where
+    start = do
+      let cfg =
+            PT.setStdin PT.createPipe
+              $ PT.setStdout PT.createPipe
+              $ PT.setStderr PT.inherit
+              $ PT.proc execPath []
+      process <- PT.startProcess cfg
+      let stdinHandle = PT.getStdin process
+          stdoutHandle = PT.getStdout process
+      hSetBuffering stdinHandle LineBuffering
+      hSetBuffering stdoutHandle LineBuffering
+      pure (process, (stdinHandle, stdoutHandle))
+    stop (process, _) = do
+      _ <- try @SomeException $ PT.stopProcess process
+      pure ()
+
+sendRequest :: Handle -> Value -> IO ()
+sendRequest h value = do
+  L8.hPutStrLn h (encode value)
+  hFlush h
+
+readResponse :: Handle -> Int -> IO (Either String Value)
+readResponse h micros = do
+  let readJsonLine = do
+        line <- hGetLine h
+        let trimmed = dropWhile isSpace line
+        if not (null trimmed) && head trimmed == '{'
+          then pure $ eitherDecode (L8.pack trimmed)
+          else do
+            hPutStrLn stderr $ "Ignoring non-JSON line from server: " <> line
+            readJsonLine
+
+  res <- timeout micros readJsonLine
+  case res of
+    Nothing -> pure $ Left "Timed out waiting for MCP response"
+    Just decoded -> pure decoded
+
+pollForMessage :: (Handle, Handle) -> Text -> Text -> Int -> IO (Either String Text)
+pollForMessage (hin, hout) cabalUri needle attempts = loop attempts Nothing
+  where
+    needleLower = T.toLower needle
+
+    loop 0 lastMsg =
+      pure $ Left ("Exceeded polling attempts. Last message: " <> maybe "<none>" T.unpack lastMsg)
+    loop n lastMsg = do
+      sendRequest hin $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (fromIntegral n :: Int)
+        , "method" .= ("tools/call" :: Text)
+        , "params" .= object
+            [ "name" .= ("ghcid.messages" :: Text)
+            , "arguments" .= object
+                [ "cabalURI" .= cabalUri
+                , "count" .= (80 :: Int)
+                ]
+            ]
+        ]
+      resp <- readResponse hout 10000000
+      case resp of
+        Left err ->
+          if "Timed out" `T.isInfixOf` T.pack err
+            then do
+              threadDelay 500000
+              loop (n - 1) lastMsg
+            else pure $ Left err
+        Right val -> case extractToolText val of
+          Nothing -> pure $ Left "Malformed tool response"
+          Just txt ->
+            case decodeMessagePayload txt of
+              Left parseErr -> pure $ Left ("Failed to parse message payload: " <> parseErr)
+              Right (outputTxt, linesList) ->
+                if any (\line -> needleLower `T.isInfixOf` T.toLower line) linesList
+                  then pure $ Right outputTxt
+                  else do
+                    threadDelay 500000
+                    loop (n - 1) (Just outputTxt)
+
+pollForStatus :: (Handle, Handle) -> Text -> Int -> IO (Either String (Text, Maybe Int, Maybe Text))
+pollForStatus (hin, hout) cabalUri attempts = loop attempts Nothing
+  where
+    loop 0 lastSnapshot =
+      pure $ Left ("Exceeded status polling attempts. Last status: " <> maybe "<none>" formatSnapshot lastSnapshot)
+    loop n lastSnapshot = do
+      sendRequest hin $ object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (fromIntegral n :: Int)
+        , "method" .= ("tools/call" :: Text)
+        , "params" .= object
+            [ "name" .= ("ghcid.status" :: Text)
+            , "arguments" .= object
+                [ "cabalURI" .= cabalUri
+                ]
+            ]
+        ]
+      resp <- readResponse hout 10000000
+      case resp of
+        Left err ->
+          if "Timed out" `T.isInfixOf` T.pack err
+            then do
+              threadDelay 500000
+              loop (n - 1) lastSnapshot
+            else pure $ Left err
+        Right val -> case extractToolText val of
+          Nothing -> pure $ Left "Malformed status response"
+          Just txt ->
+            case decodeStatusPayload txt of
+              Left parseErr -> pure $ Left ("Failed to parse status payload: " <> parseErr)
+              Right snapshot@(stateTxt, _, errMsg) ->
+                case T.toLower stateTxt of
+                  "running" -> pure $ Right snapshot
+                  "error" -> pure $ Left ("GHCID watch errored: " <> maybe (T.unpack stateTxt) T.unpack errMsg)
+                  _ -> do
+                    threadDelay 1000000
+                    loop (n - 1) (Just snapshot)
+
+    formatSnapshot (stateTxt, moduleCount, errMsg) =
+      T.unpack stateTxt
+        <> maybe "" (\mc -> " (modules: " <> show mc <> ")") moduleCount
+        <> maybe "" (\err -> " (error: " <> T.unpack err <> ")") errMsg
+
+decodeStatusPayload :: Text -> Either String (Text, Maybe Int, Maybe Text)
+decodeStatusPayload txt =
+  case eitherDecode (L8.pack (T.unpack txt)) of
+    Left err -> Left err
+    Right val ->
+      parseEither
+        (withObject "statusPayload" $ \o -> do
+          statusVal <- o .:? "processStatus"
+          case statusVal of
+            Nothing -> pure ("stopped", Nothing, Nothing)
+            Just Null -> pure ("stopped", Nothing, Nothing)
+            Just (Object statusObj) -> do
+              statusTxt <- statusObj .: "status"
+              moduleCount <- statusObj .:? "moduleCount"
+              errTxt <- statusObj .:? "error"
+              pure (statusTxt, moduleCount, errTxt)
+            _ -> pure ("unknown", Nothing, Nothing)
+        )
+        val
+
+decodeMessagePayload :: Text -> Either String (Text, [Text])
+decodeMessagePayload txt =
+  case eitherDecode (L8.pack (T.unpack txt)) of
+    Left err -> Left err
+    Right val ->
+      parseEither
+        (withObject "messagesPayload" $ \o -> do
+          outputTxt <- o .:? "messagesOutput" .!= ""
+          linesList <- o .:? "messagesLines" .!= []
+          pure (outputTxt, linesList)
+        )
+        val
+
+validateToolResponse :: Text -> Value -> IO ()
+validateToolResponse name value = do
+  let isValid = parseMaybe (withObject "resp" $ \o -> do
+        resultVal <- o .:? "result"
+        case resultVal of
+          Just (Object resObj) -> do
+            contentVal <- resObj .:? "content"
+            errFlag <- resObj .:? "isError"
+            case errFlag of
+              Just True -> fail "Tool response reported error"
+              _ -> case contentVal of
+                Just (Array arr) | not (null arr) -> pure ()
+                _ -> fail "Tool response missing content"
+          _ -> fail "Missing result object"
+        ) value
+  case isValid of
+    Nothing -> expectationFailure $ "Malformed response for " <> T.unpack name <> ": " <> show value
+    Just _ -> pure ()
+
+extractToolText :: Value -> Maybe Text
+extractToolText = parseMaybe $ withObject "response" $ \o -> do
+  resultVal <- o .:? "result"
+  case resultVal of
+    Nothing -> fail "Missing result"
+    Just resObj -> withObject "result" (\r -> do
+      content <- r .: "content"
+      case content of
+        Array arr -> case V.toList arr of
+          (Object obj : _) -> obj .: "text"
+          _ -> fail "Unexpected content structure"
+        _ -> fail "Unexpected content type"
+      ) resObj
+
+assertAllGood :: Text -> Bool
+assertAllGood msg = "all good" `T.isInfixOf` T.toLower msg

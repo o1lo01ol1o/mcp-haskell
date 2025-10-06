@@ -5,7 +5,6 @@ module MCP.ObeliskIntegrationSpec (spec) where
 import Control.Monad (unless)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
-import qualified Data.Vector as V
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath ((</>))
@@ -87,6 +86,22 @@ spec = describe "mcp-obelisk" $ do
         Left msg -> expectationFailure msg
         Right txt -> txt `shouldSatisfy` assertAllGood
 
+      let grepFilter = object ["grep" .= ("All good" :: Text)]
+      sendRequest hin $ messagesRequest projectPath 5 (Just grepFilter)
+      filteredResp <- readResponse hout 5000000
+      case filteredResp of
+        Left err -> expectationFailure $ "obelisk.messages tail filter failed: " <> err
+        Right val -> do
+          validateToolResponse "obelisk.messages" val
+          case extractToolText val of
+            Nothing -> expectationFailure "obelisk.messages response missing content"
+            Just payload ->
+              case decodeMessagePayload payload of
+                Left parseErr -> expectationFailure $ "Failed to decode obelisk.messages payload: " <> parseErr
+                Right (outputTxt, linesList) -> do
+                  length linesList `shouldSatisfy` (> 0)
+                  linesList `shouldSatisfy` (any assertAllGood)
+
       sendRequest hin $ stopRequest projectPath
       _ <- readResponse hout 5000000
       pure ()
@@ -143,6 +158,20 @@ spec = describe "mcp-obelisk" $ do
           ]
       ]
 
+    messagesRequest projectPath reqId mFilter = object
+      [ "jsonrpc" .= ("2.0" :: Text)
+      , "id" .= (reqId :: Int)
+      , "method" .= ("tools/call" :: Text)
+      , "params" .= object
+          [ "name" .= ("obelisk.messages" :: Text)
+          , "arguments" .= object (
+              [ "projectPath" .= T.pack projectPath
+              , "limit" .= (80 :: Int)
+              ] ++ maybe [] (\f -> ["filter" .= f]) mFilter
+            )
+          ]
+      ]
+
     validateInitialize value = do
       let result = parseMaybe (withObject "resp" $ \o -> o .:? "result") value
       case result of
@@ -160,37 +189,3 @@ spec = describe "mcp-obelisk" $ do
                 expectationFailure "Server instructions missing restart guidance"
             _ -> expectationFailure "Server initialize response missing instructions"
         _ -> expectationFailure $ "Malformed initialize response: " <> show value
-
-    validateToolResponse name value = do
-      let isError = parseMaybe (withObject "resp" $ \o -> do
-            resultVal <- o .:? "result"
-            case resultVal of
-              Just (Object resObj) -> do
-                contentVal <- resObj .:? "content"
-                errFlag <- resObj .:? "isError"
-                case errFlag of
-                  Just True -> fail "Tool response reported error"
-                  _ -> case contentVal of
-                    Just (Array arr) | not (null arr) -> pure ()
-                    _ -> fail "Tool response missing content"
-              _ -> fail "Missing result object"
-            ) value
-      case isError of
-        Nothing -> expectationFailure $ "Malformed response for " <> T.unpack name <> ": " <> show value
-        Just _ -> pure ()
-
-    assertAllGood msg = "all good" `T.isInfixOf` T.toLower msg
-
-    extractToolText :: Value -> Maybe Text
-    extractToolText = parseMaybe $ withObject "response" $ \o -> do
-      resultVal <- o .:? "result"
-      case resultVal of
-        Nothing -> fail "Missing result"
-        Just resObj -> withObject "result" (\r -> do
-          content <- r .: "content"
-          case content of
-            Array arr -> case V.toList arr of
-              (Object obj : _) -> obj .: "text"
-              _ -> fail "Unexpected content structure"
-            _ -> fail "Unexpected content type"
-          ) resObj

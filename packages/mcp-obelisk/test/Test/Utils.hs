@@ -8,6 +8,10 @@ module Test.Utils
   , readResponse
   , pollForMessage
   , pollForStatus
+  , validateToolResponse
+  , extractToolText
+  , decodeMessagePayload
+  , assertAllGood
   ) where
 
 import Control.Concurrent (threadDelay)
@@ -16,6 +20,7 @@ import Control.Monad (forM)
 import Data.Char (isSpace)
 import Data.Aeson
 import qualified Data.ByteString.Lazy.Char8 as L8
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Aeson.Types (parseMaybe, parseEither)
@@ -27,6 +32,7 @@ import System.FilePath ((</>), takeDirectory, takeFileName)
 import System.IO (Handle, BufferMode (LineBuffering), hFlush, hGetLine, hPutStrLn, hSetBuffering, stderr)
 import System.Process.Typed
 import System.Timeout (timeout)
+import Test.Hspec (expectationFailure)
 
 findMCPObeliskExecutable :: IO (Maybe FilePath)
 findMCPObeliskExecutable = do
@@ -133,7 +139,7 @@ pollForMessage (hin, hout) projectPath needle attempts = loop attempts Nothing
     loop n lastMsg = do
       sendRequest hin $ object
         [ "jsonrpc" .= ("2.0" :: Text)
-        , "id" .= (fromIntegral n :: Int)
+        , "id" .= (fromIntegral (attempts - n + 1) :: Int)
         , "method" .= ("tools/call" :: Text)
         , "params" .= object
             [ "name" .= ("obelisk.messages" :: Text)
@@ -143,50 +149,26 @@ pollForMessage (hin, hout) projectPath needle attempts = loop attempts Nothing
                 ]
             ]
         ]
-      notifications <- collectNotifications 15
-      case notifications of
-        Right txt
-          | needleLower `T.isInfixOf` T.toLower txt -> pure $ Right txt
-          | otherwise -> continueLoop (Just txt)
-        Left _ -> continueLoop lastMsg
-      where
-        continueLoop :: Maybe Text -> IO (Either String Text)
-        continueLoop currentLast = do
-          resp <- readResponse hout 10000000
-          case resp of
-            Left err ->
-              if "Timed out" `T.isInfixOf` T.pack err
-                then do
-                  threadDelay 500000
-                  loop (n - 1) currentLast
-                else pure $ Left err
-            Right val -> case extractToolText val of
-              Nothing -> pure $ Left "Malformed tool response"
-              Just txt ->
-                if needleLower `T.isInfixOf` T.toLower txt
-                  then pure $ Right txt
+      resp <- readResponse hout 10000000
+      case resp of
+        Left err ->
+          if "Timed out" `T.isInfixOf` T.pack err
+            then do
+              threadDelay 500000
+              loop (n - 1) lastMsg
+            else pure $ Left err
+        Right val -> case extractToolText val of
+          Nothing -> pure $ Left "Malformed tool response"
+          Just txt ->
+            case decodeMessagePayload txt of
+              Left parseErr -> pure $ Left ("Failed to parse message payload: " <> parseErr)
+              Right (outputTxt, linesList) ->
+                if any (\lineTxt -> needleLower `T.isInfixOf` T.toLower lineTxt) linesList
+                    || needleLower `T.isInfixOf` T.toLower outputTxt
+                  then pure $ Right outputTxt
                   else do
                     threadDelay 500000
-                    loop (n - 1) (Just txt)
-
-    collectNotifications :: Int -> IO (Either String Text)
-    collectNotifications 0 = pure $ Left "No notifications"
-    collectNotifications k = do
-      mLine <- timeout 100000 $ hGetLine hout
-      case mLine of
-        Nothing -> pure $ Left ""
-        Just line ->
-          let trimmed = dropWhile isSpace line
-          in if not (null trimmed) && head trimmed == '{'
-               then case eitherDecode (L8.pack trimmed) of
-                      Right val ->
-                        case extractToolText val of
-                          Just txt -> pure $ Right txt
-                          Nothing -> collectNotifications (k - 1)
-                      Left _ -> collectNotifications (k - 1)
-               else collectNotifications (k - 1)
-
-
+                    loop (n - 1) (Just outputTxt)
 
 
 pollForStatus :: (Handle, Handle) -> FilePath -> Int -> IO (Either String (Text, Maybe Text, Maybe Text))
@@ -248,6 +230,41 @@ decodeStatusPayload txt =
           pure (statusTxt, lastMsg, errTxt)
         )
         val
+
+decodeMessagePayload :: Text -> Either String (Text, [Text])
+decodeMessagePayload txt =
+  case eitherDecode (L8.pack (T.unpack txt)) of
+    Left err -> Left err
+    Right val ->
+      parseEither
+        (withObject "messagesPayload" $ \o -> do
+          outputTxt <- fromMaybe "" <$> o .:? "output"
+          linesList <- fromMaybe [] <$> o .:? "lines"
+          pure (outputTxt, linesList)
+        )
+        val
+
+validateToolResponse :: Text -> Value -> IO ()
+validateToolResponse name value = do
+  let resultCheck = parseMaybe (withObject "resp" $ \o -> do
+        resultVal <- o .:? "result"
+        case resultVal of
+          Just (Object resObj) -> do
+            contentVal <- resObj .:? "content"
+            errFlag <- resObj .:? "isError"
+            case errFlag of
+              Just True -> fail "Tool response reported error"
+              _ -> case contentVal of
+                Just (Array arr) | not (null arr) -> pure ()
+                _ -> fail "Tool response missing content"
+          _ -> fail "Missing result object"
+        ) value
+  case resultCheck of
+    Nothing -> expectationFailure $ "Malformed response for " <> T.unpack name <> ": " <> show value
+    Just _ -> pure ()
+
+assertAllGood :: Text -> Bool
+assertAllGood msg = "all good" `T.isInfixOf` T.toLower msg
 
 
 extractToolText :: Value -> Maybe Text

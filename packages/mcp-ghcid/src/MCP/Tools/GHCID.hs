@@ -1,420 +1,418 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module MCP.Tools.GHCID
-  ( -- * MCP Tools
-    ghcidTools
-  , handleGHCIDTool
-  
-    -- * Individual tools
-  , startGHCIDTool
-  , stopGHCIDTool  
-  , restartGHCIDTool
-  , getStatusTool
-  , getMessagesTool
-  , listProcessesTool
-  
-    -- * Tool registry
-  , registerGHCIDTools
-  , GHCIDRegistry
-  ) where
+  ( -- * Tool implementations
+    executeGHCIDTool,
+    startGHCIDProcess,
+    stopGHCIDProcess,
+    restartGHCIDProcess,
+    getGHCIDStatus,
+    getGHCIDMessages,
+    listGHCIDProcesses,
+  )
+where
 
-import Control.Concurrent.STM
-import Control.Exception (try, SomeException)
+import Control.Exception (SomeException, try)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
+-- MCP SDK imports
+
+-- Internal imports
+
+import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (formatTime, defaultTimeLocale)
-import qualified Data.Map.Strict as Map
-
--- MCP imports
-import MCP.Types
-import MCP.Protocol
+import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import qualified Data.Vector as V
+import GHCID.Client (GHCIDClient, createGHCIDClient, getCurrentOutput, startGHCID, stopGHCID)
+import GHCID.Config (GHCIDConfig (..), defaultGHCIDConfig)
+import GHCID.Filter (FilterRequest (..), applyShellFilter)
+import GHCID.Output (formatCompilerMessage)
+import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
+import qualified GHCID.ProcessRegistry as PR
+import MCP.SDK.Types (Content (TextContent), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
+import MCP.Types.GHCID
 import Utils.Logging
 
--- GHCID imports  
-import GHCID.Client
-import GHCID.Config
-import GHCID.Filter (FilterRequest(..), applyShellFilter)
-import GHCID.Output (formatCompilerMessage)
+-- | Execute a GHCID tool based on the tool name
+executeGHCIDTool :: ProcessRegistry -> ToolsCallRequest -> IO ToolsCallResponse
+executeGHCIDTool registry req = do
+  case textToToolName (toolName req) of
+    Nothing ->
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Unknown GHCID tool: " <> toolName req])
+            (Just True)
+    Just toolType -> case toolType of
+      StartGHCID -> startGHCIDProcess registry (toolArguments req)
+      StopGHCID -> stopGHCIDProcess registry (toolArguments req)
+      RestartProcess -> restartGHCIDProcess registry (toolArguments req)
+      ProcessStatus -> getGHCIDStatus registry (toolArguments req)
+      GetMessages -> getGHCIDMessages registry (toolArguments req)
+      ListProcesses -> listGHCIDProcesses registry (toolArguments req)
 
--- | Global registry of active GHCID processes
-type GHCIDRegistry = TVar (Map.Map Text GHCIDClient)
+-- | Start a new GHCID process
+startGHCIDProcess :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+startGHCIDProcess registry args = do
+  logInfo "Starting GHCID process"
 
--- | All GHCID MCP tools
-ghcidTools :: [Tool]
-ghcidTools = 
-  [ startGHCIDTool
-  , stopGHCIDTool
-  , restartGHCIDTool
-  , getStatusTool
-  , getMessagesTool      -- NEW: Now supports filtering
-  , listProcessesTool
-  ]
--- NOTE: clearMessagesTool removed - we always operate on current output
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.start"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success startArgs -> do
+          let cabalURI = startCabalURI startArgs
+              workDir = startWorkDir startArgs
+              options = startOptions startArgs
 
--- | Handle GHCID tool requests
-handleGHCIDTool :: GHCIDRegistry -> Text -> Value -> IO (Either Text Value)
-handleGHCIDTool registry toolName params = do
-  case toolName of
-    "ghcid.start" -> handleStartGHCID registry params
-    "ghcid.stop" -> handleStopGHCID registry params
-    "ghcid.restart" -> handleRestartGHCID registry params
-    "ghcid.status" -> handleGetStatus registry params
-    "ghcid.messages" -> handleGetMessages registry params
-    "ghcid.list" -> handleListProcesses registry params
-    _ -> return $ Left $ "Unknown GHCID tool: " <> toolName
+          -- Check if process already exists
+          existing <- PR.getGHCIDProcess registry cabalURI
+          case existing of
+            Just _ -> return $ Left "GHCID process already running for this project"
+            Nothing -> do
+              -- Start the process using ProcessRegistry
+              startResult <- PR.startGHCIDProcess registry cabalURI workDir
 
--- | Start GHCID tool definition
-startGHCIDTool :: Tool
-startGHCIDTool = Tool
-  { name = "ghcid.start"
-  , description = Just "Start a GHCID process for a Haskell project"
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "name" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Unique name for this GHCID process" :: Text)
-              ]
-          , "workingDir" .= object  
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Working directory (defaults to current)" :: Text)
-              ]
-          , "targetFiles" .= object
-              [ "type" .= ("array" :: Text)
-              , "items" .= object ["type" .= ("string" :: Text)]
-              , "description" .= ("Target Haskell files to load" :: Text)
-              ]
-          , "cabalFile" .= object
-              [ "type" .= ("string" :: Text)  
-              , "description" .= ("Path to cabal file (optional)" :: Text)
-              ]
-          ]
-      , "required" .= (["name"] :: [Text])
-      ]
-  }
+              case startResult of
+                Left err -> return $ Left err
+                Right _ -> do
+                  let resultData =
+                        StartGHCIDResult
+                          { startSuccess = True,
+                            startMessage = "GHCID process started successfully",
+                            startProcessId = Just $ getCabalURI cabalURI
+                          }
 
--- | Stop GHCID tool definition
-stopGHCIDTool :: Tool  
-stopGHCIDTool = Tool
-  { name = "ghcid.stop"
-  , description = Just "Stop a running GHCID process"
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "name" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the GHCID process to stop" :: Text)
-              ]
-          ]
-      , "required" .= (["name"] :: [Text])
-      ]
-  }
+                  return $ Right $ T.pack $ show $ toJSON resultData
 
--- | Restart GHCID tool definition
-restartGHCIDTool :: Tool
-restartGHCIDTool = Tool
-  { name = "ghcid.restart"
-  , description = Just "Restart a GHCID process" 
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "name" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the GHCID process to restart" :: Text)
-              ]
-          ]
-      , "required" .= (["name"] :: [Text])
-      ]
-  }
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to start GHCID process: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error starting GHCID: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID start failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to start GHCID: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      logInfo "GHCID process started successfully"
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing
 
--- | Get status tool definition
-getStatusTool :: Tool
-getStatusTool = Tool
-  { name = "ghcid.status"
-  , description = Just "Get status of a GHCID process"
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "name" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the GHCID process" :: Text)
-              ]
-          ]
-      , "required" .= (["name"] :: [Text])
-      ]
-  }
+-- | Stop a running GHCID process
+stopGHCIDProcess :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+stopGHCIDProcess registry args = do
+  logInfo "Stopping GHCID process"
 
--- | Get messages tool definition with mutually exclusive filtering
-getMessagesTool :: Tool
-getMessagesTool = Tool
-  { name = "ghcid.messages"  
-  , description = Just "Get current GHCID output with optional filtering (use ONE of: grep, head, tail, or lines)"
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "name" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the GHCID process" :: Text)
-              ]
-          , "grep" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Grep pattern to filter output lines" :: Text)
-              ]
-          , "head" .= object
-              [ "type" .= ("integer" :: Text)
-              , "description" .= ("Show first N lines of output" :: Text)
-              ]
-          , "tail" .= object
-              [ "type" .= ("integer" :: Text)
-              , "description" .= ("Show last N lines of output" :: Text)
-              ]
-          , "lines" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Line range (e.g., '10-20') to extract" :: Text)
-              ]
-          ]
-      , "required" .= (["name"] :: [Text])
-      , "additionalProperties" .= False
-      , "oneOf" .= 
-          [ object ["required" .= (["name"] :: [Text])]  -- No filter
-          , object ["required" .= (["name", "grep"] :: [Text])]
-          , object ["required" .= (["name", "head"] :: [Text])]  
-          , object ["required" .= (["name", "tail"] :: [Text])]
-          , object ["required" .= (["name", "lines"] :: [Text])]
-          ]
-      ]
-  }
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.stop"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success stopArgs -> do
+          let cabalURI = stopCabalURI stopArgs
+              force = stopForce stopArgs
 
--- NOTE: clearMessagesTool removed - we always operate on current ghcid output
+          -- Look up the process
+          existing <- PR.getGHCIDProcess registry cabalURI
+          case existing of
+            Nothing -> return $ Left "No GHCID process running for this project"
+            Just ghcidClient -> do
+              -- Stop the process
+              stopResult <- PR.stopGHCIDProcess registry cabalURI
 
--- | List processes tool definition
-listProcessesTool :: Tool
-listProcessesTool = Tool
-  { name = "ghcid.list"
-  , description = Just "List all active GHCID processes"
-  , inputSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object []
-      ]
-  }
+              case stopResult of
+                Left err -> return $ Left err
+                Right _ -> do
+                  let resultData =
+                        StopGHCIDResult
+                          { stopSuccess = True,
+                            stopMessage = "GHCID process stopped successfully"
+                          }
 
--- Tool handlers
+                  return $ Right $ T.pack $ show $ toJSON resultData
 
--- | Handle start GHCID request
-handleStartGHCID :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleStartGHCID registry params = do
-  case fromJSON params of
-    Data.Aeson.Error err -> return $ Left $ "Invalid parameters: " <> T.pack err
-    Success req -> do
-      let name = startName req
-          workDir = maybe "." Prelude.id (startWorkingDir req)
-          
-      -- Detect project configuration
-      config <- detectProjectConfig workDir
-      let finalConfig = config 
-            { targetFiles = maybe (targetFiles config) Prelude.id (startTargetFiles req)
-            , cabalFile = startCabalFile req <|> cabalFile config
-            }
-      
-      -- Create and start GHCID client
-      result <- try @SomeException $ do
-        client <- createGHCIDClient finalConfig
-        startResult <- startGHCID client
-        case startResult of
-          Left err -> return $ Left err
-          Right _ -> do
-            -- Register the client
-            atomically $ modifyTVar registry (Map.insert name client)
-            return $ Right $ object 
-              [ "success" .= True
-              , "message" .= ("GHCID process started successfully" :: Text)
-              , "name" .= name
-              , "workingDir" .= workDir
-              ]
-              
-      case result of
-        Left ex -> return $ Left $ "Failed to start GHCID: " <> T.pack (show ex)
-        Right res -> return res
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to stop GHCID process: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error stopping GHCID: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID stop failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to stop GHCID: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      logInfo "GHCID process stopped successfully"
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing
 
--- | Handle stop GHCID request  
-handleStopGHCID :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleStopGHCID registry params = do
-  case fromJSON params of
-    Data.Aeson.Error err -> return $ Left $ "Invalid parameters: " <> T.pack err
-    Success req -> do
-      let name = stopName req
-      
-      clients <- readTVarIO registry
-      case Map.lookup name clients of
-        Nothing -> return $ Left $ "GHCID process not found: " <> name
-        Just client -> do
-          result <- stopGHCID client
-          case result of
+-- | Restart a GHCID process
+restartGHCIDProcess :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+restartGHCIDProcess registry args = do
+  logInfo "Restarting GHCID process"
+
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.restart"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success restartArgs -> do
+          let cabalURI = restartCabalURI restartArgs
+              newWorkDir = restartWorkDir restartArgs
+
+          -- Look up the existing process
+          existing <- PR.getGHCIDProcess registry cabalURI
+          oldProcessId <- case existing of
+            Nothing -> return Nothing
+            Just ghcidClient -> do
+              -- Stop the existing process
+              stopResult <- PR.stopGHCIDProcess registry cabalURI
+              case stopResult of
+                Left _ -> return Nothing -- Continue with restart anyway
+                Right _ -> return $ Just "old_process"
+
+          -- Start new process
+          let workDir = maybe (T.unpack $ getCabalURI cabalURI) id newWorkDir
+
+          startResult <- PR.startGHCIDProcess registry cabalURI workDir
+
+          case startResult of
             Left err -> return $ Left err
             Right _ -> do
-              -- Unregister the client
-              atomically $ modifyTVar registry (Map.delete name)
-              return $ Right $ object
-                [ "success" .= True
-                , "message" .= ("GHCID process stopped successfully" :: Text)
-                , "name" .= name
-                ]
+              let resultData =
+                    RestartProcessResult
+                      { restartSuccess = True,
+                        restartMessage = "GHCID process restarted successfully",
+                        restartOldProcessId = oldProcessId,
+                        restartNewProcessId = Just $ getCabalURI cabalURI
+                      }
 
--- | Handle restart GHCID request
-handleRestartGHCID :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleRestartGHCID registry params = do
-  case fromJSON params of
-    Data.Aeson.Error err -> return $ Left $ "Invalid parameters: " <> T.pack err
-    Success req -> do
-      let name = restartName req
-      
-      clients <- readTVarIO registry
-      case Map.lookup name clients of
-        Nothing -> return $ Left $ "GHCID process not found: " <> name
-        Just client -> do
-          result <- restartGHCID client
-          case result of
-            Left err -> return $ Left err
-            Right _ -> return $ Right $ object
-              [ "success" .= True
-              , "message" .= ("GHCID process restarted successfully" :: Text)
-              , "name" .= name
-              ]
+              return $ Right $ T.pack $ show $ toJSON resultData
 
--- | Handle get status request
-handleGetStatus :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleGetStatus registry params = do
-  case fromJSON params of
-    Data.Aeson.Error err -> return $ Left $ "Invalid parameters: " <> T.pack err
-    Success req -> do
-      let name = statusName req
-      
-      clients <- readTVarIO registry
-      case Map.lookup name clients of
-        Nothing -> return $ Left $ "GHCID process not found: " <> name
-        Just client -> do
-          status <- getGHCIDStatus client
-          return $ Right $ object
-            [ "name" .= name
-            , "status" .= T.pack (show status)
-            ]
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to restart GHCID process: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error restarting GHCID: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID restart failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to restart GHCID: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      logInfo "GHCID process restarted successfully"
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing
 
--- | Handle get messages request with filtering support
-handleGetMessages :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleGetMessages registry params = do
-  case fromJSON params of
-    Data.Aeson.Error err -> return $ Left $ "Invalid parameters: " <> T.pack err
-    Success req -> do
-      let name = messagesName req
-          filterReq = extractFilterRequest req
-      
-      clients <- readTVarIO registry
-      case Map.lookup name clients of
-        Nothing -> return $ Left $ "GHCID process not found: " <> name
-        Just client -> do
-          -- Get current output from buffer
-          rawOutput <- getCurrentOutput client
-          
-          -- Apply shell filter if specified
-          filteredResult <- applyShellFilter rawOutput filterReq
-          case filteredResult of
-            Left filterErr -> return $ Left $ "Filter error: " <> filterErr
-            Right filteredOutput -> 
-              return $ Right $ object
-                [ "name" .= name
-                , "output" .= filteredOutput
-                , "filtered" .= (filterReq /= NoFilterRequest)
-                , "totalLines" .= length (T.lines rawOutput)
-                , "filteredLines" .= length (T.lines filteredOutput)
-                ]
+-- | Get status of a GHCID process
+getGHCIDStatus :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+getGHCIDStatus registry args = do
+  logInfo "Getting GHCID process status"
 
--- NOTE: handleClearMessages removed - we always operate on current output
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.status"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success statusArgs -> do
+          let cabalURI = statusCabalURI statusArgs
 
--- | Handle list processes request
-handleListProcesses :: GHCIDRegistry -> Value -> IO (Either Text Value)
-handleListProcesses registry _params = do
-  clients <- readTVarIO registry
-  processInfo <- mapM getProcessInfo (Map.toList clients)
-  return $ Right $ object
-    [ "processes" .= processInfo
-    , "count" .= Map.size clients
-    ]
-  where
-    getProcessInfo (name, client) = do
-      status <- getGHCIDStatus client
-      messages <- getCompilerMessages client
-      return $ object
-        [ "name" .= name
-        , "status" .= T.pack (show status)
-        , "messageCount" .= length messages
-        ]
+          -- Look up the process
+          existing <- PR.getGHCIDProcess registry cabalURI
+          status <- case existing of
+            Nothing -> return Nothing
+            Just handle -> Just <$> PR.getProcessStatus handle
 
--- Helper functions and data types
+          let resultData =
+                ProcessStatusResult
+                  { processStatus = status,
+                    processUptime = case existing of
+                      Nothing -> Nothing
+                      Just _ -> Just "unknown" -- Could implement uptime tracking
+                  }
 
-data StartGHCIDRequest = StartGHCIDRequest
-  { startName :: Text
-  , startWorkingDir :: Maybe FilePath
-  , startTargetFiles :: Maybe [FilePath] 
-  , startCabalFile :: Maybe FilePath
-  } deriving (Show)
+          return $ Right $ T.pack $ show $ toJSON resultData
 
-instance FromJSON StartGHCIDRequest where
-  parseJSON = withObject "StartGHCIDRequest" $ \o -> StartGHCIDRequest
-    <$> o .: "name"
-    <*> o .:? "workingDir"
-    <*> o .:? "targetFiles"
-    <*> o .:? "cabalFile"
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to get GHCID status: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error getting GHCID status: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID status check failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to get GHCID status: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing
 
-data StopGHCIDRequest = StopGHCIDRequest { stopName :: Text } deriving (Show)
-instance FromJSON StopGHCIDRequest where
-  parseJSON = withObject "StopGHCIDRequest" $ \o -> StopGHCIDRequest <$> o .: "name"
+-- | Get messages from a GHCID process
+getGHCIDMessages :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+getGHCIDMessages registry args = do
+  logInfo "Getting GHCID messages"
 
-data RestartGHCIDRequest = RestartGHCIDRequest { restartName :: Text } deriving (Show)  
-instance FromJSON RestartGHCIDRequest where
-  parseJSON = withObject "RestartGHCIDRequest" $ \o -> RestartGHCIDRequest <$> o .: "name"
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.messages"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success messagesArgs -> do
+          let cabalURI = messagesCabalURI messagesArgs
+              filterReq = messagesFilter messagesArgs
+              count = messagesCount messagesArgs
 
-data StatusRequest = StatusRequest { statusName :: Text } deriving (Show)
-instance FromJSON StatusRequest where
-  parseJSON = withObject "StatusRequest" $ \o -> StatusRequest <$> o .: "name"
+          -- Look up the process
+          existing <- PR.getGHCIDProcess registry cabalURI
+          case existing of
+            Nothing -> return $ Left "No GHCID process running for this project"
+            Just ghcidClient -> do
+              -- Get messages from the client
+              messages <- case existing of
+                Nothing -> return []
+                Just handle -> T.lines <$> PR.getBufferedOutput handle
 
-data MessagesRequest = MessagesRequest 
-  { messagesName :: Text
-  , messagesFilter :: FilterRequest
-  } deriving (Show)
-  
-instance FromJSON MessagesRequest where
-  parseJSON = withObject "MessagesRequest" $ \o -> do
-    name <- o .: "name"
-    filterReq <- parseJSON (Object o)  -- Reuse FilterRequest FromJSON
-    return $ MessagesRequest name filterReq
+              -- Apply filtering if requested
+              filteredMessages <- case filterReq of
+                Nothing -> return messages
+                Just filter -> do
+                  filtered <- applyShellFilter (T.unlines messages) filter
+                  case filtered of
+                    Left err -> return []
+                    Right output -> return $ T.lines output
 
--- Extract filter request from messages request
-extractFilterRequest :: MessagesRequest -> FilterRequest
-extractFilterRequest = messagesFilter
+              -- Limit count if requested
+              let limitedMessages = case count of
+                    Nothing -> filteredMessages
+                    Just n -> take n filteredMessages
 
--- | Format compiler message for MCP response
-formatMessageForMCP :: CompilerMessage -> Value
-formatMessageForMCP msg = object
-  [ "severity" .= T.pack (show (msgSeverity msg))
-  , "file" .= msgFile msg
-  , "line" .= msgLine msg
-  , "column" .= msgColumn msg
-  , "message" .= msgText msg
-  , "timestamp" .= formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" (msgTimestamp msg)
-  , "formatted" .= formatCompilerMessage msg
-  ]
+              timestamp <- getCurrentTime
+              let resultData =
+                    MessagesResult
+                      { messagesOutput = T.unlines limitedMessages,
+                        messagesLines = limitedMessages,
+                        messagesTimestamp = timestamp
+                      }
 
--- | Register GHCID tools with MCP server
-registerGHCIDTools :: IO GHCIDRegistry
-registerGHCIDTools = do
-  registry <- newTVarIO Map.empty
-  logInfo "GHCID MCP tools registered"
-  return registry
+              return $ Right $ T.pack $ show $ toJSON resultData
 
--- Helper for Maybe alternative
-(<|>) :: Maybe a -> Maybe a -> Maybe a
-Nothing <|> b = b
-a <|> _ = a
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to get GHCID messages: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error getting GHCID messages: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID messages retrieval failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to get GHCID messages: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing
+
+-- | List all GHCID processes
+listGHCIDProcesses :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse
+listGHCIDProcesses registry args = do
+  logInfo "Listing GHCID processes"
+
+  result <- try $ do
+    case args of
+      Nothing -> return $ Left "Missing arguments for ghcid.list"
+      Just argsObject -> case fromJSON (Object argsObject) of
+        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+        Success listArgs -> do
+          let includeStatus = listIncludeStatus listArgs
+
+          -- Get all registered processes
+          processes <- PR.listActiveProcesses registry
+
+          statusInfo <-
+            if includeStatus
+              then do
+                handles <- mapM (PR.getGHCIDProcess registry) processes
+                statuses <-
+                  mapM
+                    ( \mh -> case mh of
+                        Nothing -> return Nothing
+                        Just h -> Just <$> PR.getProcessStatus h
+                    )
+                    handles
+                return $ Just $ zip processes (map (maybe GHCIDStopped id) statuses)
+              else return Nothing
+
+          let resultData =
+                ProcessListResult
+                  { processURIs = processes,
+                    processStatuses = statusInfo
+                  }
+
+          return $ Right $ T.pack $ show $ toJSON resultData
+
+  case result of
+    Left (ex :: SomeException) -> do
+      logError $ "Failed to list GHCID processes: " <> T.pack (show ex)
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Error listing GHCID processes: " <> T.pack (show ex)])
+            (Just True)
+    Right (Left err) -> do
+      logWarn $ "GHCID process listing failed: " <> err
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent $ "Failed to list GHCID processes: " <> err])
+            (Just True)
+    Right (Right response) -> do
+      return $
+        ToolsCallResponse $
+          ToolCallResult
+            (V.fromList [TextContent response])
+            Nothing

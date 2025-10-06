@@ -30,6 +30,7 @@ data GHCIDServerConfig = GHCIDServerConfig
   , defaultWorkspace :: FilePath   -- Default workspace directory
   , autoDiscoverProjects :: Bool   -- Auto-discover Haskell projects
   , retentionPolicy :: Int         -- How many messages to keep (0 = unlimited)
+  , instructionsMessage :: Text    -- Guidance presented to MCP clients
   } deriving (Show, Eq, Generic)
 
 instance FromJSON GHCIDServerConfig where
@@ -47,6 +48,11 @@ defaultServerConfig = GHCIDServerConfig
   , defaultWorkspace = "."
   , autoDiscoverProjects = True
   , retentionPolicy = 1000
+  , instructionsMessage = T.unlines
+      [ "Use `ghcid.start` to launch or restart a ghcid session for your project."
+      , "Changes to `.cabal` files require running `ghcid.restart` so ghcid reloads the build plan."
+      , "If you change the project environment (for example nix-shell or GHC version), restart the `mcp-ghcid` server itself."
+      ]
   }
 
 -- | Load configuration from file

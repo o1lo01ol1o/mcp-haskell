@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -9,468 +10,456 @@
 {-# LANGUAGE TypeFamilies #-}
 
 module MCP.Types.GHCID
-  ( -- * GADT Request Types
-    GHCIDRequest(..)
-  , GHCIDResponse(..)
-  , SomeGHCIDRequest(..)
-  , SomeGHCIDResponse(..)
-  , RequestId(..)
-  
-    -- * Request/Response Type Families
-  , ResponseType
-  , RequestData
-  , ResponseData
-  
-    -- * Specific Request Types
-  , StartGHCIDData(..)
-  , StopGHCIDData(..)
-  , GetMessagesData(..)
-  , ListProcessesData(..)
-  , ProcessStatusData(..)
-  , RestartProcessData(..)
-  
-    -- * Response Types
-  , StartGHCIDResult(..)
-  , StopGHCIDResult(..)
-  , MessagesResult(..)
-  , ProcessListResult(..)
-  , ProcessStatusResult(..)
-  , RestartProcessResult(..)
-  
-    -- * JSON Serialization
-  , encodeGHCIDRequest
-  , decodeGHCIDRequest
-  , encodeGHCIDResponse
-  
-    -- * Request Handlers
-  , handleGHCIDRequest
-  , RequestHandler(..)
-  ) where
+  ( -- * GHCID Tool Request Types
+    GHCIDToolName (..),
+    StartGHCIDArgs (..),
+    StopGHCIDArgs (..),
+    GetMessagesArgs (..),
+    ListProcessesArgs (..),
+    ProcessStatusArgs (..),
+    RestartProcessArgs (..),
+
+    -- * GHCID Tool Response Types
+    StartGHCIDResult (..),
+    StopGHCIDResult (..),
+    MessagesResult (..),
+    ProcessListResult (..),
+    ProcessStatusResult (..),
+    RestartProcessResult (..),
+
+    -- * Tool Definitions
+    ghcidTools,
+
+    -- * Utilities
+    toolNameToText,
+    textToToolName,
+  )
+where
 
 import Control.Monad (when)
 import Data.Aeson
-import Data.Aeson.Types (Parser)
+-- MCP SDK imports
+
+-- Internal imports
+
 import qualified Data.Aeson.KeyMap as KM
-import Data.Proxy
+import Data.Aeson.Types (Parser)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
-import Data.Typeable
-
--- Internal imports
-import GHCID.ProcessRegistry (CabalURI(..), GHCIDStatus(..), ProcessRegistry, GHCIDHandle)
+import qualified Data.Vector as V
+import GHC.Generics (Generic)
 import GHCID.Filter (FilterRequest)
+import GHCID.ProcessRegistry (CabalURI (..), GHCIDHandle, GHCIDStatus (..), ProcessRegistry)
+import MCP.SDK.Types (Content (TextContent), Tool (..), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
 
--- | Request identifier for tracking
-newtype RequestId = RequestId { getRequestId :: Text }
-  deriving (Show, Eq, Ord)
+-- | GHCID tool names
+data GHCIDToolName
+  = StartGHCID
+  | StopGHCID
+  | GetMessages
+  | ListProcesses
+  | ProcessStatus
+  | RestartProcess
+  deriving (Show, Eq, Ord, Generic)
 
--- | Type family to map request types to response types
-type family ResponseType (req :: * -> *) :: * -> *
+instance ToJSON GHCIDToolName
 
--- | Type family to extract request data type
-type family RequestData (req :: *) :: *
+instance FromJSON GHCIDToolName
 
--- | Type family to extract response data type  
-type family ResponseData (resp :: *) :: *
+-- | Convert tool name to text
+toolNameToText :: GHCIDToolName -> Text
+toolNameToText StartGHCID = "ghcid.start"
+toolNameToText StopGHCID = "ghcid.stop"
+toolNameToText GetMessages = "ghcid.messages"
+toolNameToText ListProcesses = "ghcid.list"
+toolNameToText ProcessStatus = "ghcid.status"
+toolNameToText RestartProcess = "ghcid.restart"
 
--- Request data types
+-- | Convert text to tool name
+textToToolName :: Text -> Maybe GHCIDToolName
+textToToolName "ghcid.start" = Just StartGHCID
+textToToolName "ghcid.stop" = Just StopGHCID
+textToToolName "ghcid.messages" = Just GetMessages
+textToToolName "ghcid.list" = Just ListProcesses
+textToToolName "ghcid.status" = Just ProcessStatus
+textToToolName "ghcid.restart" = Just RestartProcess
+textToToolName _ = Nothing
 
--- | Start GHCID process request
-data StartGHCIDData = StartGHCIDData
-  { startCabalURI :: CabalURI
-  , startWorkDir :: FilePath
-  , startOptions :: Maybe Value  -- Additional options
-  } deriving (Show, Eq)
+-- | Tool argument types
 
--- | Stop GHCID process request
-data StopGHCIDData = StopGHCIDData
-  { stopCabalURI :: CabalURI
-  , stopForce :: Bool  -- Force stop if graceful fails
-  } deriving (Show, Eq)
+-- | Start GHCID process arguments
+data StartGHCIDArgs = StartGHCIDArgs
+  { startCabalURI :: CabalURI,
+    startWorkDir :: FilePath,
+    startOptions :: Maybe Value -- Additional options
+  }
+  deriving (Show, Eq, Generic)
 
--- | Get messages request  
-data GetMessagesData = GetMessagesData
-  { messagesCabalURI :: CabalURI
-  , messagesFilter :: Maybe FilterRequest
-  , messagesCount :: Maybe Int  -- Limit number of messages
-  } deriving (Show, Eq)
+instance ToJSON StartGHCIDArgs where
+  toJSON StartGHCIDArgs {..} =
+    object
+      [ "cabalURI" .= getCabalURI startCabalURI,
+        "workDir" .= startWorkDir,
+        "options" .= startOptions
+      ]
 
--- | List processes request
-data ListProcessesData = ListProcessesData
-  { listIncludeStatus :: Bool  -- Include detailed status
-  } deriving (Show, Eq)
+instance FromJSON StartGHCIDArgs where
+  parseJSON = withObject "StartGHCIDArgs" $ \o ->
+    StartGHCIDArgs
+      <$> (CabalURI <$> o .: "cabalURI")
+      <*> o .: "workDir"
+      <*> o .:? "options"
 
--- | Get process status request
-data ProcessStatusData = ProcessStatusData
+-- | Stop GHCID process arguments
+data StopGHCIDArgs = StopGHCIDArgs
+  { stopCabalURI :: CabalURI,
+    stopForce :: Bool -- Force stop if graceful fails
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON StopGHCIDArgs where
+  toJSON StopGHCIDArgs {..} =
+    object
+      [ "cabalURI" .= getCabalURI stopCabalURI,
+        "force" .= stopForce
+      ]
+
+instance FromJSON StopGHCIDArgs where
+  parseJSON = withObject "StopGHCIDArgs" $ \o ->
+    StopGHCIDArgs
+      <$> (CabalURI <$> o .: "cabalURI")
+      <*> o .: "force"
+
+-- | Get messages arguments
+data GetMessagesArgs = GetMessagesArgs
+  { messagesCabalURI :: CabalURI,
+    messagesFilter :: Maybe FilterRequest,
+    messagesCount :: Maybe Int -- Limit number of messages
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON GetMessagesArgs where
+  toJSON GetMessagesArgs {..} =
+    object
+      [ "cabalURI" .= getCabalURI messagesCabalURI,
+        "filter" .= messagesFilter,
+        "count" .= messagesCount
+      ]
+
+instance FromJSON GetMessagesArgs where
+  parseJSON = withObject "GetMessagesArgs" $ \o ->
+    GetMessagesArgs
+      <$> (CabalURI <$> o .: "cabalURI")
+      <*> o .:? "filter"
+      <*> o .:? "count"
+
+-- | List processes arguments
+data ListProcessesArgs = ListProcessesArgs
+  { listIncludeStatus :: Bool -- Include detailed status
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON ListProcessesArgs where
+  toJSON ListProcessesArgs {..} =
+    object
+      [ "includeStatus" .= listIncludeStatus
+      ]
+
+instance FromJSON ListProcessesArgs where
+  parseJSON = withObject "ListProcessesArgs" $ \o ->
+    ListProcessesArgs
+      <$> o .: "includeStatus"
+
+-- | Get process status arguments
+data ProcessStatusArgs = ProcessStatusArgs
   { statusCabalURI :: CabalURI
-  } deriving (Show, Eq)
+  }
+  deriving (Show, Eq, Generic)
 
--- | Restart process request
-data RestartProcessData = RestartProcessData
-  { restartCabalURI :: CabalURI
-  , restartWorkDir :: Maybe FilePath  -- New working directory
-  } deriving (Show, Eq)
+instance ToJSON ProcessStatusArgs where
+  toJSON ProcessStatusArgs {..} =
+    object
+      [ "cabalURI" .= getCabalURI statusCabalURI
+      ]
 
--- Response data types
+instance FromJSON ProcessStatusArgs where
+  parseJSON = withObject "ProcessStatusArgs" $ \o ->
+    ProcessStatusArgs
+      <$> (CabalURI <$> o .: "cabalURI")
+
+-- | Restart process arguments
+data RestartProcessArgs = RestartProcessArgs
+  { restartCabalURI :: CabalURI,
+    restartWorkDir :: Maybe FilePath -- New working directory
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON RestartProcessArgs where
+  toJSON RestartProcessArgs {..} =
+    object
+      [ "cabalURI" .= getCabalURI restartCabalURI,
+        "workDir" .= restartWorkDir
+      ]
+
+instance FromJSON RestartProcessArgs where
+  parseJSON = withObject "RestartProcessArgs" $ \o ->
+    RestartProcessArgs
+      <$> (CabalURI <$> o .: "cabalURI")
+      <*> o .:? "workDir"
+
+-- | Tool result types
 
 -- | Start GHCID result
 data StartGHCIDResult = StartGHCIDResult
-  { startSuccess :: Bool
-  , startMessage :: Text
-  , startProcessId :: Maybe Text
-  } deriving (Show, Eq)
+  { startSuccess :: Bool,
+    startMessage :: Text,
+    startProcessId :: Maybe Text
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON StartGHCIDResult
+
+instance FromJSON StartGHCIDResult
 
 -- | Stop GHCID result
 data StopGHCIDResult = StopGHCIDResult
-  { stopSuccess :: Bool
-  , stopMessage :: Text
-  } deriving (Show, Eq)
+  { stopSuccess :: Bool,
+    stopMessage :: Text
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON StopGHCIDResult
+
+instance FromJSON StopGHCIDResult
 
 -- | Messages result
 data MessagesResult = MessagesResult
-  { messagesOutput :: Text
-  , messagesLines :: [Text]
-  , messagesTimestamp :: UTCTime
-  } deriving (Show, Eq)
+  { messagesOutput :: Text,
+    messagesLines :: [Text],
+    messagesTimestamp :: UTCTime
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON MessagesResult
+
+instance FromJSON MessagesResult
 
 -- | Process list result
 data ProcessListResult = ProcessListResult
-  { processURIs :: [CabalURI]
-  , processStatuses :: Maybe [(CabalURI, GHCIDStatus)]
-  } deriving (Show, Eq)
+  { processURIs :: [CabalURI],
+    processStatuses :: Maybe [(CabalURI, GHCIDStatus)]
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON ProcessListResult where
+  toJSON ProcessListResult {..} =
+    object
+      [ "processURIs" .= map getCabalURI processURIs,
+        "processStatuses" .= fmap (map (\(uri, status) -> object ["uri" .= getCabalURI uri, "status" .= status])) processStatuses
+      ]
+
+instance FromJSON ProcessListResult where
+  parseJSON = withObject "ProcessListResult" $ \o ->
+    ProcessListResult
+      <$> (map CabalURI <$> o .: "processURIs")
+      <*> o .:? "processStatuses"
 
 -- | Process status result
 data ProcessStatusResult = ProcessStatusResult
-  { processStatus :: Maybe GHCIDStatus
-  , processUptime :: Maybe Text
-  } deriving (Show, Eq)
+  { processStatus :: Maybe GHCIDStatus,
+    processUptime :: Maybe Text
+  }
+  deriving (Show, Eq, Generic)
+
+instance ToJSON ProcessStatusResult
+
+instance FromJSON ProcessStatusResult
 
 -- | Restart process result
 data RestartProcessResult = RestartProcessResult
-  { restartSuccess :: Bool
-  , restartMessage :: Text
-  , restartOldProcessId :: Maybe Text
-  , restartNewProcessId :: Maybe Text
-  } deriving (Show, Eq)
-
--- | GADT for type-safe GHCID requests
-data GHCIDRequest a where
-  StartGHCID :: StartGHCIDData -> GHCIDRequest StartGHCIDResult
-  StopGHCID :: StopGHCIDData -> GHCIDRequest StopGHCIDResult
-  GetMessages :: GetMessagesData -> GHCIDRequest MessagesResult
-  ListProcesses :: ListProcessesData -> GHCIDRequest ProcessListResult
-  ProcessStatus :: ProcessStatusData -> GHCIDRequest ProcessStatusResult
-  RestartProcess :: RestartProcessData -> GHCIDRequest RestartProcessResult
-
-deriving instance Show (GHCIDRequest a)
-deriving instance Eq (GHCIDRequest a)
-
--- | GADT for type-safe GHCID responses
-data GHCIDResponse a where
-  StartGHCIDResponse :: RequestId -> StartGHCIDResult -> GHCIDResponse StartGHCIDResult
-  StopGHCIDResponse :: RequestId -> StopGHCIDResult -> GHCIDResponse StopGHCIDResult
-  GetMessagesResponse :: RequestId -> MessagesResult -> GHCIDResponse MessagesResult
-  ListProcessesResponse :: RequestId -> ProcessListResult -> GHCIDResponse ProcessListResult
-  ProcessStatusResponse :: RequestId -> ProcessStatusResult -> GHCIDResponse ProcessStatusResult
-  RestartProcessResponse :: RequestId -> RestartProcessResult -> GHCIDResponse RestartProcessResult
-  ErrorResponse :: RequestId -> Text -> GHCIDResponse a
-
-deriving instance Show (GHCIDResponse a)
-
--- Type family instances
-type instance ResponseType GHCIDRequest = GHCIDResponse
-type instance RequestData StartGHCIDData = StartGHCIDData
-type instance ResponseData StartGHCIDResult = StartGHCIDResult
-
--- JSON serialization instances
-
-instance ToJSON StartGHCIDData where
-  toJSON StartGHCIDData{..} = object
-    [ "cabalURI" .= getCabalURI startCabalURI
-    , "workDir" .= startWorkDir
-    , "options" .= startOptions
-    ]
-
-instance FromJSON StartGHCIDData where
-  parseJSON = withObject "StartGHCIDData" $ \o -> StartGHCIDData
-    <$> (CabalURI <$> o .: "cabalURI")
-    <*> o .: "workDir"
-    <*> o .:? "options"
-
-instance ToJSON StopGHCIDData where
-  toJSON StopGHCIDData{..} = object
-    [ "cabalURI" .= getCabalURI stopCabalURI
-    , "force" .= stopForce
-    ]
-
-instance FromJSON StopGHCIDData where
-  parseJSON = withObject "StopGHCIDData" $ \o -> StopGHCIDData
-    <$> (CabalURI <$> o .: "cabalURI")
-    <*> o .: "force"
-
-instance ToJSON GetMessagesData where
-  toJSON GetMessagesData{..} = object
-    [ "cabalURI" .= getCabalURI messagesCabalURI
-    , "filter" .= messagesFilter
-    , "count" .= messagesCount
-    ]
-
-instance FromJSON GetMessagesData where
-  parseJSON = withObject "GetMessagesData" $ \o -> GetMessagesData
-    <$> (CabalURI <$> o .: "cabalURI")
-    <*> o .:? "filter"
-    <*> o .:? "count"
-
-instance ToJSON ListProcessesData where
-  toJSON ListProcessesData{..} = object
-    [ "includeStatus" .= listIncludeStatus
-    ]
-
-instance FromJSON ListProcessesData where
-  parseJSON = withObject "ListProcessesData" $ \o -> ListProcessesData
-    <$> o .: "includeStatus"
-
-instance ToJSON ProcessStatusData where
-  toJSON ProcessStatusData{..} = object
-    [ "cabalURI" .= getCabalURI statusCabalURI
-    ]
-
-instance FromJSON ProcessStatusData where
-  parseJSON = withObject "ProcessStatusData" $ \o -> ProcessStatusData
-    <$> (CabalURI <$> o .: "cabalURI")
-
-instance ToJSON RestartProcessData where
-  toJSON RestartProcessData{..} = object
-    [ "cabalURI" .= getCabalURI restartCabalURI
-    , "workDir" .= restartWorkDir
-    ]
-
-instance FromJSON RestartProcessData where
-  parseJSON = withObject "RestartProcessData" $ \o -> RestartProcessData
-    <$> (CabalURI <$> o .: "cabalURI")
-    <*> o .:? "workDir"
-
--- Response JSON instances
-
-instance ToJSON StartGHCIDResult where
-  toJSON StartGHCIDResult{..} = object
-    [ "success" .= startSuccess
-    , "message" .= startMessage
-    , "processId" .= startProcessId
-    ]
-
-instance FromJSON StartGHCIDResult where
-  parseJSON = withObject "StartGHCIDResult" $ \o -> StartGHCIDResult
-    <$> o .: "success"
-    <*> o .: "message"
-    <*> o .:? "processId"
-
-instance ToJSON StopGHCIDResult where
-  toJSON StopGHCIDResult{..} = object
-    [ "success" .= stopSuccess
-    , "message" .= stopMessage
-    ]
-
-instance FromJSON StopGHCIDResult where
-  parseJSON = withObject "StopGHCIDResult" $ \o -> StopGHCIDResult
-    <$> o .: "success"
-    <*> o .: "message"
-
-instance ToJSON MessagesResult where
-  toJSON MessagesResult{..} = object
-    [ "output" .= messagesOutput
-    , "lines" .= messagesLines
-    , "timestamp" .= messagesTimestamp
-    ]
-
-instance FromJSON MessagesResult where
-  parseJSON = withObject "MessagesResult" $ \o -> MessagesResult
-    <$> o .: "output"
-    <*> o .: "lines"
-    <*> o .: "timestamp"
-
-instance ToJSON ProcessListResult where
-  toJSON ProcessListResult{..} = object
-    [ "uris" .= map getCabalURI processURIs
-    , "statuses" .= fmap (map (\(uri, status) -> object ["uri" .= getCabalURI uri, "status" .= status])) processStatuses
-    ]
-
-instance FromJSON ProcessListResult where
-  parseJSON = withObject "ProcessListResult" $ \o -> ProcessListResult
-    <$> (map CabalURI <$> o .: "uris")
-    <*> (o .:? "statuses" >>= traverse parseStatuses)
-    where
-      parseStatuses = traverse $ \statusObj -> withObject "ProcessStatus" (\obj ->
-        (,) <$> (CabalURI <$> obj .: "uri") <*> obj .: "status") statusObj
-
-instance ToJSON ProcessStatusResult where
-  toJSON ProcessStatusResult{..} = object
-    [ "status" .= processStatus
-    , "uptime" .= processUptime
-    ]
-
-instance FromJSON ProcessStatusResult where
-  parseJSON = withObject "ProcessStatusResult" $ \o -> ProcessStatusResult
-    <$> o .:? "status"
-    <*> o .:? "uptime"
-
-instance ToJSON RestartProcessResult where
-  toJSON RestartProcessResult{..} = object
-    [ "success" .= restartSuccess
-    , "message" .= restartMessage
-    , "oldProcessId" .= restartOldProcessId
-    , "newProcessId" .= restartNewProcessId
-    ]
-
-instance FromJSON RestartProcessResult where
-  parseJSON = withObject "RestartProcessResult" $ \o -> RestartProcessResult
-    <$> o .: "success"
-    <*> o .: "message"
-    <*> o .:? "oldProcessId"
-    <*> o .:? "newProcessId"
-
--- GADT JSON serialization
-
--- | Encode a GHCID request to JSON with type information
-encodeGHCIDRequest :: RequestId -> GHCIDRequest a -> Value
-encodeGHCIDRequest reqId request = object $ case request of
-  StartGHCID dat -> 
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.start" :: Text)
-    , "params" .= dat
-    ]
-  StopGHCID dat ->
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.stop" :: Text)
-    , "params" .= dat
-    ]
-  GetMessages dat ->
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.messages" :: Text)
-    , "params" .= dat
-    ]
-  ListProcesses dat ->
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.list" :: Text)
-    , "params" .= dat
-    ]
-  ProcessStatus dat ->
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.status" :: Text)
-    , "params" .= dat
-    ]
-  RestartProcess dat ->
-    [ "id" .= getRequestId reqId
-    , "method" .= ("ghcid.restart" :: Text)
-    , "params" .= dat
-    ]
-
--- | Decode a GHCID request from JSON (existentially quantified)
-data SomeGHCIDRequest = forall a. SomeGHCIDRequest RequestId (GHCIDRequest a)
-
-decodeGHCIDRequest :: Value -> Parser SomeGHCIDRequest
-decodeGHCIDRequest = withObject "GHCIDRequest" $ \o -> do
-  reqId <- RequestId <$> o .: "id"
-  method <- o .: "method"
-  case method of
-    "ghcid.start" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (StartGHCID dat)
-    "ghcid.stop" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (StopGHCID dat)
-    "ghcid.messages" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (GetMessages dat)
-    "ghcid.list" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (ListProcesses dat)
-    "ghcid.status" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (ProcessStatus dat)
-    "ghcid.restart" -> do
-      params <- o .: "params"
-      dat <- parseJSON params
-      return $ SomeGHCIDRequest reqId (RestartProcess dat)
-    _ -> fail $ "Unknown GHCID method: " ++ T.unpack method
-
--- | Encode a GHCID response to JSON
-encodeGHCIDResponse :: GHCIDResponse a -> Value
-encodeGHCIDResponse response = object $ case response of
-  StartGHCIDResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  StopGHCIDResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  GetMessagesResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  ListProcessesResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  ProcessStatusResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  RestartProcessResponse reqId result ->
-    [ "id" .= getRequestId reqId
-    , "result" .= result
-    ]
-  ErrorResponse reqId err ->
-    [ "id" .= getRequestId reqId
-    , "error" .= object ["message" .= err]
-    ]
-
--- Note: Removed problematic polymorphic decodeGHCIDResponse function
--- In practice, responses are handled through the handleGHCIDRequest function
--- which directly encodes to JSON using encodeGHCIDResponse
-
--- | Request handler type
-data RequestHandler = RequestHandler
-  { handleStart :: StartGHCIDData -> IO StartGHCIDResult
-  , handleStop :: StopGHCIDData -> IO StopGHCIDResult
-  , handleMessages :: GetMessagesData -> IO MessagesResult
-  , handleList :: ListProcessesData -> IO ProcessListResult
-  , handleStatus :: ProcessStatusData -> IO ProcessStatusResult
-  , handleRestart :: RestartProcessData -> IO RestartProcessResult
+  { restartSuccess :: Bool,
+    restartMessage :: Text,
+    restartOldProcessId :: Maybe Text,
+    restartNewProcessId :: Maybe Text
   }
+  deriving (Show, Eq, Generic)
 
--- | Existentially quantified response wrapper
-data SomeGHCIDResponse = forall a. SomeGHCIDResponse (GHCIDResponse a)
+instance ToJSON RestartProcessResult
 
--- | Handle a GHCID request using the provided handlers
-handleGHCIDRequest :: RequestHandler -> RequestId -> SomeGHCIDRequest -> IO Value
-handleGHCIDRequest handlers reqId (SomeGHCIDRequest _ request) = do
-  result <- case request of
-    StartGHCID dat -> do
-      res <- handleStart handlers dat
-      return $ SomeGHCIDResponse $ StartGHCIDResponse reqId res
-    StopGHCID dat -> do
-      res <- handleStop handlers dat
-      return $ SomeGHCIDResponse $ StopGHCIDResponse reqId res
-    GetMessages dat -> do
-      res <- handleMessages handlers dat
-      return $ SomeGHCIDResponse $ GetMessagesResponse reqId res
-    ListProcesses dat -> do
-      res <- handleList handlers dat
-      return $ SomeGHCIDResponse $ ListProcessesResponse reqId res
-    ProcessStatus dat -> do
-      res <- handleStatus handlers dat
-      return $ SomeGHCIDResponse $ ProcessStatusResponse reqId res
-    RestartProcess dat -> do
-      res <- handleRestart handlers dat
-      return $ SomeGHCIDResponse $ RestartProcessResponse reqId res
-  
-  case result of
-    SomeGHCIDResponse resp -> return $ encodeGHCIDResponse resp
+instance FromJSON RestartProcessResult
+
+-- | Tool definitions for MCP protocol
+ghcidTools :: [Tool]
+ghcidTools =
+  [ Tool
+      { toolNameField = "ghcid.start",
+        toolDescription = Just "Start a new ghcid process for monitoring a Haskell project",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "cabalURI",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Cabal project URI identifier" :: Text))
+                            ]
+                      ),
+                      ( "workDir",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Working directory for the project" :: Text))
+                            ]
+                      ),
+                      ( "options",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("object" :: Text)),
+                              ("description", toJSON ("Additional GHCID configuration options" :: Text))
+                            ]
+                      )
+                    ]
+              ),
+              ("required", toJSON (["cabalURI", "workDir"] :: [Text]))
+            ]
+      },
+    Tool
+      { toolNameField = "ghcid.stop",
+        toolDescription = Just "Stop a running ghcid process",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "cabalURI",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Cabal project URI identifier" :: Text))
+                            ]
+                      ),
+                      ( "force",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("boolean" :: Text)),
+                              ("description", toJSON ("Force stop even if process is busy" :: Text)),
+                              ("default", toJSON False)
+                            ]
+                      )
+                    ]
+              ),
+              ("required", toJSON (["cabalURI"] :: [Text]))
+            ]
+      },
+    Tool
+      { toolNameField = "ghcid.messages",
+        toolDescription = Just "Get compiler messages from a running ghcid process",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "cabalURI",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Cabal project URI identifier" :: Text))
+                            ]
+                      ),
+                      ( "filter",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("object" :: Text)),
+                              ("description", toJSON ("Filter options for messages" :: Text))
+                            ]
+                      ),
+                      ( "count",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("integer" :: Text)),
+                              ("description", toJSON ("Maximum number of messages to return" :: Text)),
+                              ("minimum", toJSON (1 :: Int))
+                            ]
+                      )
+                    ]
+              ),
+              ("required", toJSON (["cabalURI"] :: [Text]))
+            ]
+      },
+    Tool
+      { toolNameField = "ghcid.list",
+        toolDescription = Just "List all active ghcid processes",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "includeStatus",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("boolean" :: Text)),
+                              ("description", toJSON ("Include detailed status information" :: Text)),
+                              ("default", toJSON False)
+                            ]
+                      )
+                    ]
+              )
+            ]
+      },
+    Tool
+      { toolNameField = "ghcid.status",
+        toolDescription = Just "Get status of a specific ghcid process",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "cabalURI",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Cabal project URI identifier" :: Text))
+                            ]
+                      )
+                    ]
+              ),
+              ("required", toJSON (["cabalURI"] :: [Text]))
+            ]
+      },
+    Tool
+      { toolNameField = "ghcid.restart",
+        toolDescription = Just "Restart a ghcid process",
+        toolInputSchema =
+          KM.fromList
+            [ ("type", toJSON ("object" :: Text)),
+              ( "properties",
+                toJSON $
+                  KM.fromList
+                    [ ( "cabalURI",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Cabal project URI identifier" :: Text))
+                            ]
+                      ),
+                      ( "newWorkDir",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("New working directory (optional)" :: Text))
+                            ]
+                      )
+                    ]
+              ),
+              ("required", toJSON (["cabalURI"] :: [Text]))
+            ]
+      }
+  ]
