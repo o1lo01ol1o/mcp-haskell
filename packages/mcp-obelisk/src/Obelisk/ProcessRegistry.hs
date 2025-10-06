@@ -55,40 +55,40 @@ startObeliskWatch (ProcessRegistry registryVar) projectId@(ProjectId projectPath
   if not exists
     then pure $ Left $ "Project path not found: " <> T.pack projectPath
     else do
-      alreadyRunning <- atomically $ Map.member projectId <$> readTVar registryVar
-      if alreadyRunning
-        then pure $ Right $ StartResult True "ob watch already running" projectPath
-        else do
-          statusVar <- newTVarIO ObStarting
-          bufferVar <- newTVarIO Seq.empty
-          lastMessageVar <- newTVarIO Nothing
+      wasRunning <- atomically $ Map.member projectId <$> readTVar registryVar
+      when wasRunning $ void $ stopObeliskWatch (ProcessRegistry registryVar) projectId
 
-          let processConfig =
-                setWorkingDir projectPath
-                  $ setStdout createPipe
-                  $ setStderr createPipe
-                  $ setStdin inherit
-                  $ setCreateGroup True
-                  $ proc "ob" ["watch"]
+      statusVar <- newTVarIO ObStarting
+      bufferVar <- newTVarIO Seq.empty
+      lastMessageVar <- newTVarIO Nothing
 
-          startResult <- try @SomeException $ startProcess processConfig
-          case startResult of
-            Left ex -> pure $ Left $ "Failed to start ob watch: " <> T.pack (show ex)
-            Right process -> do
-              stdoutReader <- async $ pumpOutput statusVar bufferVar lastMessageVar (getStdout process)
-              stderrReader <- async $ pumpError lastMessageVar (getStderr process)
+      let processConfig =
+            setWorkingDir projectPath
+              $ setStdout createPipe
+              $ setStderr createPipe
+              $ setStdin inherit
+              $ setCreateGroup True
+              $ proc "ob" ["watch"]
 
-              let handle = ObeliskHandle
-                    { ohProcess = process
-                      , ohStatus = statusVar
-                      , ohBuffer = bufferVar
-                      , ohLastMessage = lastMessageVar
-                      , ohStdoutReader = stdoutReader
-                      , ohStderrReader = stderrReader
-                    }
+      startResult <- try @SomeException $ startProcess processConfig
+      case startResult of
+        Left ex -> pure $ Left $ "Failed to start ob watch: " <> T.pack (show ex)
+        Right process -> do
+          stdoutReader <- async $ pumpOutput statusVar bufferVar lastMessageVar (getStdout process)
+          stderrReader <- async $ pumpError lastMessageVar (getStderr process)
 
-              atomically $ modifyTVar' registryVar (Map.insert projectId handle)
-              pure $ Right $ StartResult True "ob watch started" projectPath
+          let handle = ObeliskHandle
+                { ohProcess = process
+                  , ohStatus = statusVar
+                  , ohBuffer = bufferVar
+                  , ohLastMessage = lastMessageVar
+                  , ohStdoutReader = stdoutReader
+                  , ohStderrReader = stderrReader
+                }
+
+          atomically $ modifyTVar' registryVar (Map.insert projectId handle)
+          let startMsg = if wasRunning then "ob watch restarted" else "ob watch started"
+          pure $ Right $ StartResult True startMsg projectPath
 
 stopObeliskWatch :: ProcessRegistry -> ProjectId -> IO (Either Text StopResult)
 stopObeliskWatch (ProcessRegistry registryVar) projectId@(ProjectId projectPath) = do

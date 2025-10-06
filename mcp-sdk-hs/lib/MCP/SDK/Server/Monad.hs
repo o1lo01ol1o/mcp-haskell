@@ -71,7 +71,8 @@ data ServerConfig = ServerConfig
     serverMaxConnections :: Int,
     serverRequestTimeout :: Int,
     serverLogLevel :: LogLevel,
-    serverAuthMiddleware :: Maybe (AuthMiddleware ServerM)
+    serverAuthMiddleware :: Maybe (AuthMiddleware ServerM),
+    serverInstructions :: Maybe Text
   }
 
 -- | Log levels

@@ -247,7 +247,8 @@ data ElicitResponse = ElicitResponse
 data InitializeResponse = InitializeResponse
   { respProtocolVersion :: Text,
     respCapabilities :: Capabilities,
-    respServerInfo :: ServerInfo
+    respServerInfo :: ServerInfo,
+    respInstructions :: Maybe Text
   }
   deriving (Eq, Show)
 
@@ -528,14 +529,15 @@ instance FromJSON InitializeResponse where
       <$> o .: "protocolVersion"
       <*> o .: "capabilities"
       <*> o .: "serverInfo"
+      <*> o .:? "instructions"
 
 instance ToJSON InitializeResponse where
-  toJSON (InitializeResponse pv caps info) =
+  toJSON (InitializeResponse pv caps info instructions) =
     object
-      [ "protocolVersion" .= pv,
-        "capabilities" .= caps,
-        "serverInfo" .= info
-      ]
+      ([ "protocolVersion" .= pv,
+         "capabilities" .= caps,
+         "serverInfo" .= info
+       ] ++ maybe [] (\instr -> ["instructions" .= instr]) instructions)
 
 instance FromJSON ToolsListRequest where
   parseJSON = withObject "ToolsListRequest" $ \o ->

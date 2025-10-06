@@ -64,7 +64,8 @@ defaultServerConfig =
       serverMaxConnections = 100,
       serverRequestTimeout = 30,
       serverLogLevel = Info,
-      serverAuthMiddleware = Nothing
+      serverAuthMiddleware = Nothing,
+      serverInstructions = Nothing
     }
 
 -- | Logging helper functions that respect server config
@@ -143,7 +144,7 @@ messageLoop = do
                 mVar <- liftIO $ atomically $ Map.lookup respId <$> readTVar pendingRequests
                 case mVar of
                   Just var -> do
-                    logDebugS $ "Received response for server-initiated request: " <> unRequestId respId
+                    logDebugS $ "Received response for server-initiated request: " <> requestIdToText respId
                     let responseVal = case (mResult, mError) of
                           (Just result, _) -> Right result
                           (_, Just err) -> Left $ ProtocolError (errorMessage err)
@@ -168,9 +169,9 @@ handleIncomingServerMessage msg = do
       case authResult of
         Left err -> case msg of
           JSONRPCRequest req -> do
-            let reqIdText = unRequestId (reqId req)
+            let reqIdText = requestIdToText (reqId req)
             logWarnS $ "Authentication failed for request: " <> reqIdText
-            sendResponse reqIdText (Left err :: Either MCPError Value)
+            sendResponse (reqId req) (Left err :: Either MCPError Value)
           _ -> logWarnS "Authentication failed for incoming message."
         Right authInfo -> processMessage msg (Just authInfo)
   where
@@ -191,12 +192,12 @@ handleRequest req mAuthInfo = do
   let method = reqMethod req
   let params = reqParams req
 
-  logDebugS $ "Processing " <> method <> " request with ID: " <> unRequestId requestId
+  logDebugS $ "Processing " <> method <> " request with ID: " <> requestIdToText requestId
 
   let wrapAndSend :: (ToJSON a) => ServerM (Either MCPError a) -> ServerM ()
       wrapAndSend action = do
         result <- action
-        sendResponse (unRequestId requestId) result
+        sendResponse requestId result
 
   case method of
     "initialize" -> wrapAndSend $ handleInitialize params
@@ -210,21 +211,21 @@ handleRequest req mAuthInfo = do
     "completion/complete" -> wrapAndSend $ handleCompleteRequest params
     _ -> do
       logWarnS $ "Unsupported method: " <> method
-      sendResponse (unRequestId requestId) (Left (UnsupportedMethod method) :: Either MCPError Value)
+      sendResponse requestId (Left (UnsupportedMethod method) :: Either MCPError Value)
 
 -- | Send JSON-RPC response
-sendResponse :: (ToJSON a) => Text -> Either MCPError a -> ServerM ()
+sendResponse :: (ToJSON a) => RequestId -> Either MCPError a -> ServerM ()
 sendResponse reqId result = do
   env <- ask
   case env of
     ServerEnv transport _ _ _ _ _ _ _ _ -> do
       let response = case result of
-            Left err -> JSONRPCResponse (JSONRPCResponseMessage (RequestId reqId) Nothing (Just $ errorToJSONRPCError err))
-            Right val -> JSONRPCResponse (JSONRPCResponseMessage (RequestId reqId) (Just $ toJSON val) Nothing)
+            Left err -> JSONRPCResponse (JSONRPCResponseMessage reqId Nothing (Just $ errorToJSONRPCError err))
+            Right val -> JSONRPCResponse (JSONRPCResponseMessage reqId (Just $ toJSON val) Nothing)
       sendResult <- liftIO $ sendMessage transport response
       case sendResult of
         Left err -> logErrorS $ "Failed to send response: " <> T.pack (show err)
-        Right () -> logDebugS $ "Response sent for request: " <> reqId
+        Right () -> logDebugS $ "Response sent for request: " <> requestIdToText reqId
 
 -- | Handle notifications in ServerM
 handleNotification :: JSONRPCNotificationMessage -> Maybe AuthInfo -> ServerM ()
@@ -242,7 +243,7 @@ handleInitialize params = do
     Aeson.Error msg -> do
       logErrorS $ "Failed to parse initialize request: " <> T.pack msg
       return $ Left $ ParseError $ T.pack msg
-    Success (InitializeRequest _ caps clientInfo) -> do
+    Success (InitializeRequest requestedVersion caps clientInfo) -> do
       logInfoS $ "Initializing session with client: " <> clientName clientInfo
 
       -- Update server state
@@ -251,11 +252,17 @@ handleInitialize params = do
         writeTVar (serverState env) (ServerReady clientInfo caps)
         writeTVar (clientCapabilities env) (Just caps)
 
+      let negotiatedVersion =
+            if requestedVersion `elem` supportedProtocolVersions
+              then requestedVersion
+              else latestProtocolVersion
+
       let response =
             InitializeResponse
-              { respProtocolVersion = "2024-11-05",
+              { respProtocolVersion = negotiatedVersion,
                 respCapabilities = serverCapabilities env,
-                respServerInfo = serverInfo env
+                respServerInfo = serverInfo env,
+                respInstructions = serverInstructions (serverConfig env)
               }
 
       logInfoS "Session initialized successfully"
