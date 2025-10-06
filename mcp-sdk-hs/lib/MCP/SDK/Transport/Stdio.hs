@@ -15,10 +15,11 @@ import Control.Concurrent.STM
 import Control.Exception (IOException, catch, try)
 import Control.Monad (forever, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Aeson (decode, encode)
+import Data.Aeson (encode, eitherDecode)
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as L8
+import Data.List (isPrefixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -96,16 +97,26 @@ startMessageReader transport@StdioTransport {..} = do
 -- | Read a single JSON-RPC message from a handle
 readMessage :: Handle -> IO (Either MCPError JSONRPCMessage)
 readMessage handle = do
-  result <- try $ do
-    eof <- hIsEOF handle
-    if eof
-      then return $ Left ConnectionClosed
-      else do
-        line <- hGetLine handle
-        let lineBytes = L8.pack line
-        case decode lineBytes of
-          Nothing -> return $ Left $ ParseError "Invalid JSON in message"
-          Just msg -> return $ Right msg
+  let loop = do
+        eof <- hIsEOF handle
+        if eof
+          then return $ Left ConnectionClosed
+          else do
+            line <- hGetLine handle
+            if "{" `isPrefixOf` line
+              then do
+                let lineBytes = L8.pack line
+                case eitherDecode lineBytes of
+                  Left errMsg -> do
+                    TIO.hPutStrLn stderr $ "Transport raw line (invalid JSON): " <> T.pack line
+                    TIO.hPutStrLn stderr $ "Transport decode error: " <> T.pack errMsg
+                    return $ Left $ ParseError "Invalid JSON in message"
+                  Right msg -> return $ Right msg
+              else do
+                TIO.hPutStrLn stderr $ "Transport ignored non-JSON line: " <> T.pack line
+                loop
+
+  result <- try loop
 
   case result of
     Left (ex :: IOException) -> return $ Left $ TransportError $ T.pack $ show ex

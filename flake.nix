@@ -4,7 +4,7 @@
     systems.url = "github:nix-systems/default";
     devenv.url = "github:cachix/devenv/d1388a093a7225c2abe8c244109c5a4490de4077";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
-    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/039ff7ea5233ebbb0ce905417438741f988a051d";
+
   };
 
   nixConfig = {
@@ -18,7 +18,6 @@
       nixpkgs,
       devenv,
       systems,
-      mcp-haskell,
       ...
     }@inputs:
     let
@@ -39,7 +38,7 @@
           devenv-test = self.devShells.${system}.default.config.test;
 
           # Provide mcp-ghcid as a convenient package using GHC 9.8.4
-          mcp-ghcid = mcp-haskell.lib.mkMcpGhcid {
+          mcp-ghcid = self.lib.mkMcpGhcid {
             inherit system;
             ghcid = pkgs.ghcid;
           };
@@ -61,13 +60,17 @@
               config.allowUnfree = true;
             };
 
-            # Build mcp-common first
-            mcp-common = pkgs.haskell.packages.ghc948.callCabal2nix "mcp-common" (./packages/mcp-common) { };
-
-            # Build the Haskell package with mcp-common dependency
-            haskellPkg = pkgs.haskell.packages.ghc948.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) {
-              inherit mcp-common;
+            mcpOverlay = self: super: {
+              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
+              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
+              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
             };
+
+            haskellPkgs = pkgs.haskell.packages.ghc948.override {
+              overrides = mcpOverlay;
+            };
+
+            haskellPkg = haskellPkgs.mcp-ghcid;
 
             # Create static executable
             staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
@@ -97,14 +100,20 @@
             inherit inputs pkgs;
             modules = [
               {
+                # Per https://devenv.sh/guides/using-with-flakes/
+                devenv.root = toString ./.;
+
                 # https://devenv.sh/reference/options/
-                languages.haskell.enable = true;
+                languages.haskell = {
+                  enable = true;
+                  package = pkgs.haskell.packages.ghc948.ghc;
+                };
                 languages.nix.enable = true;
 
                 packages = [
                   pkgs.hello
                   # Add mcp-ghcid using the same GHC version as our Haskell development
-                  (mcp-haskell.lib.mkMcpGhcid {
+                  (self.lib.mkMcpGhcid {
                     inherit system;
                     ghcid = pkgs.ghcid;
                   })

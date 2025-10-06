@@ -15,17 +15,59 @@ module MCP.SDK.Types where
 
 import Data.Aeson
 import Data.Aeson.KeyMap (insert)
-import Data.Aeson.Types (Parser)
-import Data.Hashable (Hashable)
+import Data.Aeson.Types (Parser, typeMismatch)
+import Data.Hashable (Hashable (..))
 import Data.Map.Strict (Map)
+import Data.Scientific (floatingOrInteger)
 import Data.Text (Text)
+import qualified Data.Text as T
 import qualified Data.Vector as V
 import MCP.SDK.Error (MCPError)
 import MCP.SDK.Types.Auth (AuthInfo)
 
+-- | Latest protocol version supported by this SDK.
+latestProtocolVersion :: Text
+latestProtocolVersion = "2025-06-18"
+
+-- | Default negotiated version when the requested version is unsupported.
+defaultNegotiatedProtocolVersion :: Text
+defaultNegotiatedProtocolVersion = "2025-03-26"
+
+-- | Ordered list of protocol versions understood by this SDK.
+supportedProtocolVersions :: [Text]
+supportedProtocolVersions =
+  [ latestProtocolVersion
+  , defaultNegotiatedProtocolVersion
+  , "2024-11-05"
+  , "2024-10-07"
+  ]
+
 -- | Request ID type for JSON-RPC
-newtype RequestId = RequestId {unRequestId :: Text}
-  deriving (Eq, Show, Ord, FromJSON, ToJSON, Hashable)
+data RequestId
+  = RequestIdText Text
+  | RequestIdNumber Integer
+  deriving (Eq, Show, Ord)
+
+instance Hashable RequestId where
+  hashWithSalt salt (RequestIdText t) = hashWithSalt salt (0 :: Int, t)
+  hashWithSalt salt (RequestIdNumber n) = hashWithSalt salt (1 :: Int, n)
+
+requestIdToText :: RequestId -> Text
+requestIdToText (RequestIdText t) = t
+requestIdToText (RequestIdNumber n) = T.pack (show n)
+
+instance FromJSON RequestId where
+  parseJSON (String t) = pure (RequestIdText t)
+  parseJSON (Number n) =
+    case floatingOrInteger n of
+      Left (_ :: Double) -> fail "Request id must be an integer"
+      Right (i :: Integer) -> pure $ RequestIdNumber i
+  parseJSON v = typeMismatch "RequestId" v
+
+instance ToJSON RequestId where
+  toJSON (RequestIdText t) = String t
+  toJSON (RequestIdNumber n) = Number (fromInteger n)
+
 
 -- | Method names as a closed type family
 data Method
@@ -611,11 +653,16 @@ instance ToJSON ToolsListResponse where
     object ["tools" .= tools, "nextCursor" .= cursor]
 
 instance FromJSON ToolsCallResponse where
-  parseJSON = withObject "ToolsCallResponse" $ \o ->
-    ToolsCallResponse <$> o .: "content"
+  parseJSON = withObject "ToolsCallResponse" $ \o -> do
+    content <- o .: "content"
+    isError <- o .:? "isError"
+    pure $ ToolsCallResponse (ToolCallResult content isError)
 
 instance ToJSON ToolsCallResponse where
-  toJSON (ToolsCallResponse result) = object ["content" .= result]
+  toJSON (ToolsCallResponse (ToolCallResult content isError)) =
+    object $
+      [ "content" .= content
+      ] ++ maybe [] (\flag -> ["isError" .= flag]) isError
 
 instance FromJSON ResourcesListResponse where
   parseJSON = withObject "ResourcesListResponse" $ \o ->
