@@ -140,7 +140,7 @@ createMessage req = do
         Just _ -> do
           -- 2. Generate a new request ID
           reqIdUUID <- liftIO nextRandom
-          let reqId = RequestId (toText reqIdUUID)
+          let reqId = RequestIdText (toText reqIdUUID)
           -- 3. Create a TMVar to wait for the response
           responseVar <- liftIO newEmptyTMVarIO
           liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert reqId responseVar)
@@ -170,7 +170,7 @@ elicitInput req = do
   -- We assume that if a client supports tools, it should support elicitation.
   -- 1. Generate a new request ID
   reqIdUUID <- liftIO nextRandom
-  let reqId = RequestId (toText reqIdUUID)
+  let reqId = RequestIdText (toText reqIdUUID)
   -- 2. Create a TMVar to wait for the response
   responseVar <- liftIO newEmptyTMVarIO
   liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert reqId responseVar)

@@ -100,4 +100,4 @@ generateRequestId :: (MonadIO m) => m RequestId
 generateRequestId = do
   uuid <- liftIO nextRandom
   let reqId = "req-" <> toString uuid
-  return (RequestId (T.pack reqId))
+  return (RequestIdText (T.pack reqId))
