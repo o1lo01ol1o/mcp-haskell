@@ -5,6 +5,7 @@ module MCP.ObeliskIntegrationSpec (spec) where
 import Control.Monad (unless)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Vector as V
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath ((</>))
@@ -50,18 +51,41 @@ spec = describe "mcp-obelisk" $ do
       startResp <- readResponse hout 5000000
       case startResp of
         Left err -> expectationFailure $ "obelisk.start failed: " <> err
-        Right val -> validateToolResponse "obelisk.start" val
+        Right val -> do
+          validateToolResponse "obelisk.start" val
+          case extractToolText val of
+            Just msg -> msg `shouldSatisfy` (\t -> "started" `T.isInfixOf` T.toLower t)
+            Nothing -> expectationFailure "obelisk.start response missing content"
 
       statusResult <- pollForStatus (hin, hout) projectPath 40
       case statusResult of
         Left err -> expectationFailure err
-        Right (stateTxt, _, _) -> do
-          stateTxt `shouldBe` "running"
+        Right (stateTxt, _, _) -> stateTxt `shouldBe` "running"
 
-      finalMessage <- pollForMessage (hin, hout) projectPath "all good" 15
-      case finalMessage of
+      firstAllGood <- pollForMessage (hin, hout) projectPath "all good" 15
+      case firstAllGood of
         Left msg -> expectationFailure msg
-        Right txt -> txt `shouldSatisfy` (\msg -> "all good" `T.isInfixOf` T.toLower msg)
+        Right txt -> txt `shouldSatisfy` assertAllGood
+
+      sendRequest hin $ startRequest projectPath
+      restartResp <- readResponse hout 5000000
+      case restartResp of
+        Left err -> expectationFailure $ "obelisk.start restart failed: " <> err
+        Right val -> do
+          validateToolResponse "obelisk.start" val
+          case extractToolText val of
+            Just msg -> msg `shouldSatisfy` (\t -> "restarted" `T.isInfixOf` T.toLower t)
+            Nothing -> expectationFailure "obelisk.start restart response missing content"
+
+      restartStatus <- pollForStatus (hin, hout) projectPath 40
+      case restartStatus of
+        Left err -> expectationFailure err
+        Right (stateTxt, _, _) -> stateTxt `shouldBe` "running"
+
+      secondAllGood <- pollForMessage (hin, hout) projectPath "all good" 15
+      case secondAllGood of
+        Left msg -> expectationFailure msg
+        Right txt -> txt `shouldSatisfy` assertAllGood
 
       sendRequest hin $ stopRequest projectPath
       _ <- readResponse hout 5000000
@@ -126,6 +150,15 @@ spec = describe "mcp-obelisk" $ do
           let proto = KM.lookup "protocolVersion" obj
           unless (proto == Just (String "2025-06-18")) $
             expectationFailure "Server responded with unexpected protocol version"
+          case KM.lookup "instructions" obj of
+            Just (String instr) -> do
+              let lowerInstr = T.toLower instr
+              unless ("obelisk.start" `T.isInfixOf` lowerInstr
+                      && ".cabal" `T.isInfixOf` lowerInstr
+                      && "nix" `T.isInfixOf` lowerInstr
+                      && "restart" `T.isInfixOf` lowerInstr) $
+                expectationFailure "Server instructions missing restart guidance"
+            _ -> expectationFailure "Server initialize response missing instructions"
         _ -> expectationFailure $ "Malformed initialize response: " <> show value
 
     validateToolResponse name value = do
@@ -145,3 +178,19 @@ spec = describe "mcp-obelisk" $ do
       case isError of
         Nothing -> expectationFailure $ "Malformed response for " <> T.unpack name <> ": " <> show value
         Just _ -> pure ()
+
+    assertAllGood msg = "all good" `T.isInfixOf` T.toLower msg
+
+    extractToolText :: Value -> Maybe Text
+    extractToolText = parseMaybe $ withObject "response" $ \o -> do
+      resultVal <- o .:? "result"
+      case resultVal of
+        Nothing -> fail "Missing result"
+        Just resObj -> withObject "result" (\r -> do
+          content <- r .: "content"
+          case content of
+            Array arr -> case V.toList arr of
+              (Object obj : _) -> obj .: "text"
+              _ -> fail "Unexpected content structure"
+            _ -> fail "Unexpected content type"
+          ) resObj
