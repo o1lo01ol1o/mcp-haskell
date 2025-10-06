@@ -153,7 +153,7 @@ getMethodFromRequest (PingReq _) = Ping
 generateUniqueRequestId :: IO RequestId
 generateUniqueRequestId = do
   uuid <- UUID.nextRandom
-  return $ RequestId $ T.pack $ UUID.toString uuid
+  return $ RequestIdText $ T.pack $ UUID.toString uuid
 
 -- | High-level client API functions
 
