@@ -1,0 +1,11 @@
+# The top-level table name must be `mcp_servers`
+# The sub-table name (`ghcid` in this example) can be anything you would like.
+[mcp_servers.ghcid]
+command = "nix"
+args = ["run", ".#mcp-ghcid"]
+
+# Optional: propagate additional env vars to the MCP server. A default whitelist of env vars
+# will be forwarded automatically. Uncomment one of the examples below if you need extras.
+# env = { "API_KEY" = "value" }
+# [mcp_servers.ghcid.env]
+# API_KEY = "value"
