@@ -32,7 +32,7 @@ import MCP.SDK.Server.Middleware (AuthMiddleware)
 import MCP.SDK.Server.State (ServerContext)
 import MCP.SDK.Transport (Transport)
 import MCP.SDK.Types (Capabilities, ClientInfo, Implementation, RequestId)
-import Utils.Logging (withLogging)
+import MCP.SDK.Logging (withLogging)
 
 -- | Server Monad Transformer Stack: ReaderT + LoggingT + IO
 newtype ServerM a = ServerM

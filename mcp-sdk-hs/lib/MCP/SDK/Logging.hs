@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Utils.Logging
+module MCP.SDK.Logging
   ( LogLevel (..)
   , logDebug
   , logInfo

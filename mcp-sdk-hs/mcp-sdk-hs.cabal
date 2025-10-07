@@ -40,7 +40,7 @@ library
         MCP.SDK.Transport.Stdio
         MCP.SDK.Types
         MCP.SDK.Types.Auth
-        Utils.Logging
+        MCP.SDK.Logging
     hs-source-dirs: lib
     default-language: Haskell2010
     build-depends:
