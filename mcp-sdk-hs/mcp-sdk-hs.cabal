@@ -75,6 +75,7 @@ test-suite mcp-sdk-hs-test
         base,
         mcp-sdk-hs,
         hspec >= 2.8,
+        QuickCheck >= 2.14,
         aeson >= 2.0,
         stm,
         text
