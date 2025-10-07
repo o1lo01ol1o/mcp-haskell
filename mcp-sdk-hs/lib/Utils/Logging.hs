@@ -19,7 +19,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 import qualified Data.Text.IO as TIO
-import System.Directory (createDirectoryIfMissing, getXdgDirectory)
+import System.Directory (XdgDirectory (..), createDirectoryIfMissing, getXdgDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeDirectory)
 import System.IO
@@ -91,7 +91,7 @@ logError = logMessage Error
 
 withLogging :: LoggingT IO a -> IO a
 withLogging action =
-  Logger.runLoggingT action $ \_ level msg ->
+  Logger.runLoggingT action $ \_ _ level msg ->
     let txt = TE.decodeUtf8With TE.lenientDecode (fromLogStr msg)
     in logMessage (fromLevel level) txt
   where
