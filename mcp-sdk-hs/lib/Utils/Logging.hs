@@ -58,7 +58,7 @@ acquireLoggingTarget = do
     Just explicit -> pure explicit
     Nothing -> acquireDefault `catch` fallback
 
-  catch (createDirectoryIfMissing True (takeDirectory path)) (\(_ :: IOException) -> pure ())
+  catch (createDirectoryIfMissing True (takeDirectory path)) fallbackDir
   handle <- catch (openFile path AppendMode) fallbackOpen
   hSetBuffering handle LineBuffering
   alsoStderr <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
@@ -67,6 +67,9 @@ acquireLoggingTarget = do
   where
     fallback :: IOException -> IO FilePath
     fallback _ = pure "/tmp/mcp-hls.log"
+
+    fallbackDir :: IOException -> IO ()
+    fallbackDir _ = pure ()
 
     fallbackOpen :: IOException -> IO Handle
     fallbackOpen _ = openFile "/tmp/mcp-hls.log" AppendMode
