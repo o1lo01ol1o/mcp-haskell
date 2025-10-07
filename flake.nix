@@ -4,7 +4,7 @@
     systems.url = "github:nix-systems/default";
     devenv.url = "github:cachix/devenv/d1388a093a7225c2abe8c244109c5a4490de4077";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
-    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/20c335090f7a13e55ba7558ce0beda7f1b89f11a";
+    # mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/a8ad736efe9e4780d0aa119f0d3c2168ba77b597";
 
   };
 
@@ -114,10 +114,10 @@
                 packages = [
                   pkgs.hello
                   # Add mcp-ghcid using the same GHC version as our Haskell development
-                  # (self.lib.mkMcpGhcid {
-                  #   inherit system;
-                  #   ghcid = pkgs.ghcid;
-                  # })
+                  (self.lib.mkMcpGhcid {
+                    inherit system;
+                    ghcid = pkgs.ghcid;
+                  })
                 ];
 
                 claude.code = {

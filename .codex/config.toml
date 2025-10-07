@@ -20,3 +20,6 @@ request_max_retries = 40
 stream_max_retries = 100
 stream_idle_timeout_ms = 300000
 wire_api = "responses"
+
+[projects."/Users/timpierson/Work/mcp-hls"]
+trust_level = "trusted"
