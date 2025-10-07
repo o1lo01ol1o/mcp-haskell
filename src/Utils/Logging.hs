@@ -1,30 +1,55 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Utils.Logging where
+module Utils.Logging
+  ( LogLevel (..)
+  , logDebug
+  , logInfo
+  , logWarn
+  , logError
+  , withLogging
+  ) where
 
 import Control.Exception (IOException, catch)
+import Control.Monad (when)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Logger (LoggingT, runLoggingT)
+import qualified Control.Monad.Logger as Logger
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TE
 import qualified Data.Text.IO as TIO
 import System.Directory (createDirectoryIfMissing, getXdgDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeDirectory)
-import System.IO (BufferMode (LineBuffering), Handle, IOMode (AppendMode), hFlush, hSetBuffering, openFile, stderr)
+import System.IO
+  ( BufferMode (LineBuffering)
+  , Handle
+  , IOMode (AppendMode)
+  , hFlush
+  , hSetBuffering
+  , openFile
+  , stderr
+  )
 import System.IO.Unsafe (unsafePerformIO)
+import System.Log.FastLogger (fromLogStr)
 
 -- Log Level
 data LogLevel = Debug | Info | Warn | Error deriving (Show, Eq, Ord)
 
--- Internal logging target
-data LogTarget = LogTarget
-  { ltHandle :: Handle
-  , ltAlsoStderr :: Bool
+-- | Destination for logs.
+data LoggingTarget = LoggingTarget
+  { targetHandle :: Handle
+  , targetAlsoStderr :: Bool
   }
 
-{-# NOINLINE logTarget #-}
-logTarget :: LogTarget
-logTarget = unsafePerformIO $ do
+{-# NOINLINE loggingTarget #-}
+loggingTarget :: LoggingTarget
+loggingTarget = unsafePerformIO acquireLoggingTarget
+
+acquireLoggingTarget :: IO LoggingTarget
+acquireLoggingTarget = do
   mPath <- lookupEnv "MCP_LOG_FILE"
   let acquireDefault = do
         base <- getXdgDirectory XdgState "mcp-hls"
@@ -38,21 +63,29 @@ logTarget = unsafePerformIO $ do
   handle <- catch (openFile path AppendMode) $ \(_ :: IOException) -> openFile "/tmp/mcp-hls.log" AppendMode
   hSetBuffering handle LineBuffering
   alsoStderr <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
-  pure LogTarget { ltHandle = handle, ltAlsoStderr = alsoStderr }
+  pure LoggingTarget { targetHandle = handle, targetAlsoStderr = alsoStderr }
 
--- Log Message
 logMessage :: LogLevel -> Text -> IO ()
 logMessage level msg = do
   let line = "[" <> T.pack (show level) <> "] " <> msg
-  TIO.hPutStrLn (ltHandle logTarget) line
-  hFlush (ltHandle logTarget)
-  if ltAlsoStderr logTarget
-    then TIO.hPutStrLn stderr line
-    else pure ()
+      target = loggingTarget
+  TIO.hPutStrLn (targetHandle target) line
+  hFlush (targetHandle target)
+  when (targetAlsoStderr target) $ TIO.hPutStrLn stderr line
 
--- Convenience functions
 logDebug, logInfo, logWarn, logError :: Text -> IO ()
 logDebug = logMessage Debug
 logInfo = logMessage Info
 logWarn = logMessage Warn
 logError = logMessage Error
+
+withLogging :: LoggingT IO a -> IO a
+withLogging action =
+  runLoggingT action $ \_ level msg ->
+    let text = TE.decodeUtf8With TE.lenientDecode (fromLogStr msg)
+    in logMessage (fromLevel level) text
+  where
+    fromLevel Logger.LevelDebug = Debug
+    fromLevel Logger.LevelInfo = Info
+    fromLevel Logger.LevelWarn = Warn
+    fromLevel Logger.LevelError = Error

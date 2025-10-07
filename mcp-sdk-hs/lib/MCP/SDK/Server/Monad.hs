@@ -22,7 +22,7 @@ where
 import Control.Concurrent.STM (TMVar, TVar)
 import Control.Exception.Safe (MonadCatch, MonadMask, MonadThrow)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (LoggingT, MonadLogger, runStdoutLoggingT)
+import Control.Monad.Logger (LoggingT, MonadLogger)
 import Control.Monad.Reader (MonadReader, ReaderT, runReaderT)
 import Data.Aeson (Value)
 import Data.Map.Strict (Map)
@@ -32,6 +32,7 @@ import MCP.SDK.Server.Middleware (AuthMiddleware)
 import MCP.SDK.Server.State (ServerContext)
 import MCP.SDK.Transport (Transport)
 import MCP.SDK.Types (Capabilities, ClientInfo, Implementation, RequestId)
+import Utils.Logging (withLogging)
 
 -- | Server Monad Transformer Stack: ReaderT + LoggingT + IO
 newtype ServerM a = ServerM
@@ -91,4 +92,4 @@ data ServerHandlers = ServerHandlers {}
 
 -- | Run the Server monad
 runServerM :: ServerEnv (ServerContext ServerM) -> ServerM a -> IO a
-runServerM env action = runStdoutLoggingT $ runReaderT (unServerM action) env
+runServerM env action = withLogging $ runReaderT (unServerM action) env
