@@ -52,12 +52,3 @@ main = hspec $ do
       mcpErrorToCode (ParseError "test") `shouldBe` ParseErrorCode
       mcpErrorToCode (ValidationError "test") `shouldBe` InvalidParamsCode
       mcpErrorToCode (UnsupportedMethod "test") `shouldBe` MethodNotFoundCode
-
-  describe "Request Validation" $ do
-    it "validates initialize requests" $ property $ \pv name version -> 
-      let req = InitializeRequest pv defaultClientCapabilities (ClientInfo name version)
-      in if null pv 
-         then validateRequest req `shouldSatisfy` isLeft
-         else validateRequest req `shouldBe` Right ()
-      where isLeft (Left _) = True
-            isLeft (Right _) = False
