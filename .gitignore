@@ -1,3 +1,10 @@
 .devenv
 .devenv
 dist-newstyle
+codex/log/
+codex/sessions
+codex/auth.json
+codex/version.json
+codex/history.json
+.direnv
+log
