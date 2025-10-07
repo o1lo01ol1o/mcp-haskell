@@ -64,6 +64,7 @@ library
         exceptions >= 0.10,
         safe-exceptions >= 0.1
       , filepath
+      , directory
 
 test-suite mcp-sdk-hs-test
     import: warnings
