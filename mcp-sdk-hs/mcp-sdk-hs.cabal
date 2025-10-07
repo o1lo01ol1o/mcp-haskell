@@ -63,6 +63,7 @@ library
         fast-logger >= 3.0,
         exceptions >= 0.10,
         safe-exceptions >= 0.1
+      , filepath
 
 test-suite mcp-sdk-hs-test
     import: warnings
