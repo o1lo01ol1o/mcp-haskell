@@ -1,11 +1,22 @@
-# The top-level table name must be `mcp_servers`
-# The sub-table name (`ghcid` in this example) can be anything you would like.
+# Make model/provider explicit so the right provider block is used
+model = "gpt-5-codex"
+model_provider = "openai"
+model_reasoning_effort = "high"
+request_max_retries = 40
+stream_max_retries = 100
+stream_idle_timeout_ms = 300000
+wire_api = "responses"
+
 [mcp_servers.ghcid]
 command = "nix"
-args = ["run", ".#mcp-ghcid"]
+args = ["run", ".#mcp-ghcid", "-c", "mcp-ghcid"]
 
-# Optional: propagate additional env vars to the MCP server. A default whitelist of env vars
-# will be forwarded automatically. Uncomment one of the examples below if you need extras.
-# env = { "API_KEY" = "value" }
-# [mcp_servers.ghcid.env]
-# API_KEY = "value"
+# OpenAI via Responses API (used for GPT-5)
+[model_providers.openai]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+request_max_retries = 40
+stream_max_retries = 100
+stream_idle_timeout_ms = 300000
+wire_api = "responses"
