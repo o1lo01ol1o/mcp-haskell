@@ -56,13 +56,20 @@ acquireLoggingTarget = do
 
   path <- case mPath of
     Just explicit -> pure explicit
-    Nothing -> acquireDefault `catch` \(_ :: IOException) -> pure "/tmp/mcp-hls.log"
+    Nothing -> acquireDefault `catch` fallback
 
-  catch (createDirectoryIfMissing True (takeDirectory path)) $ \(_ :: IOException) -> pure ()
-  handle <- catch (openFile path AppendMode) $ \(_ :: IOException) -> openFile "/tmp/mcp-hls.log" AppendMode
+  catch (createDirectoryIfMissing True (takeDirectory path)) (\(_ :: IOException) -> pure ())
+  handle <- catch (openFile path AppendMode) fallbackOpen
   hSetBuffering handle LineBuffering
   alsoStderr <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
   pure LoggingTarget { targetHandle = handle, targetAlsoStderr = alsoStderr }
+
+  where
+    fallback :: IOException -> IO FilePath
+    fallback _ = pure "/tmp/mcp-hls.log"
+
+    fallbackOpen :: IOException -> IO Handle
+    fallbackOpen _ = openFile "/tmp/mcp-hls.log" AppendMode
 
 -- | Write a formatted message to the active targets.
 logMessage :: LogLevel -> Text -> IO ()
