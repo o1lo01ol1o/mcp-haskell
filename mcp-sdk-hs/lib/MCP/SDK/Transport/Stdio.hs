@@ -15,7 +15,7 @@ import Control.Concurrent.STM
 import Control.Exception (IOException, catch, try)
 import Control.Monad (forever, void, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.Aeson (encode, eitherDecode)
+import Data.Aeson (eitherDecode, encode)
 import Data.ByteString.Lazy (ByteString)
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as L8
@@ -26,7 +26,8 @@ import qualified Data.Text.IO as TIO
 import MCP.SDK.Error
 import MCP.SDK.Protocol
 import MCP.SDK.Transport
-import System.IO (Handle, hFlush, hGetLine, hIsEOF, stderr, stdin, stdout)
+import MCP.SDK.Logging (logDebug, logError)
+import System.IO (Handle, hFlush, hGetLine, hIsEOF, stdin, stdout)
 
 -- | Stdio transport for MCP communication
 data StdioTransport = StdioTransport
@@ -86,8 +87,7 @@ startMessageReader transport@StdioTransport {..} = do
       result <- readMessage stInput
       case result of
         Left err -> do
-          -- Log error but continue (could implement proper logging)
-          TIO.hPutStrLn stderr $ "Transport read error: " <> T.pack (show err)
+          logError $ "Transport read error: " <> T.pack (show err)
         Right msg -> do
           -- Queue the message for processing
           atomically $ writeTBQueue stMessageQueue msg
@@ -108,12 +108,13 @@ readMessage handle = do
                 let lineBytes = L8.pack line
                 case eitherDecode lineBytes of
                   Left errMsg -> do
-                    TIO.hPutStrLn stderr $ "Transport raw line (invalid JSON): " <> T.pack line
-                    TIO.hPutStrLn stderr $ "Transport decode error: " <> T.pack errMsg
-                    return $ Left $ ParseError "Invalid JSON in message"
+                    logDebug $ "Transport raw line (invalid JSON): " <> T.pack line
+                    logDebug $ "Transport decode error: " <> T.pack errMsg
+                    -- keep loop to continue reading
+                    loop
                   Right msg -> return $ Right msg
               else do
-                TIO.hPutStrLn stderr $ "Transport ignored non-JSON line: " <> T.pack line
+                logDebug $ "Transport ignored non-JSON line: " <> T.pack line
                 loop
 
   result <- try loop
@@ -128,6 +129,7 @@ writeMessage handle msg = do
   result <- try $ do
     let jsonBytes = encode msg
     let jsonString = L8.unpack jsonBytes
+    logDebug $ "Transport sending message: " <> T.pack jsonString
     TIO.hPutStrLn handle (T.pack jsonString)
     hFlush handle
 

@@ -12,6 +12,7 @@ import Control.Applicative ((<|>))
 import Control.Monad ((>=>))
 import Data.Aeson
 import Data.Aeson.Types (Parser)
+import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import MCP.SDK.Error
@@ -118,16 +119,14 @@ decodeResponse expectedMethod resp
 -- | JSON instances for JSON-RPC types
 instance FromJSON JSONRPCMessage where
   parseJSON = withObject "JSONRPCMessage" $ \o -> do
-    hasId <- (o .: "id" :: Parser Value) >> pure True <|> pure False
-    hasResult <- (o .: "result" :: Parser Value) >> pure True <|> pure False
-    hasError <- (o .: "error" :: Parser Value) >> pure True <|> pure False
-
-    if hasId && (hasResult || hasError)
-      then JSONRPCResponse <$> parseJSON (Object o)
-      else
-        if hasId
-          then JSONRPCRequest <$> parseJSON (Object o)
-          else JSONRPCNotification <$> parseJSON (Object o)
+    mId <- o .:? "id"
+    mResult <- o .:? "result" :: Parser (Maybe Value)
+    mError <- o .:? "error" :: Parser (Maybe Value)
+    case mId of
+      Just (_ :: Value) | isJust (mResult :: Maybe Value) || isJust (mError :: Maybe Value) ->
+        JSONRPCResponse <$> parseJSON (Object o)
+      Just _ -> JSONRPCRequest <$> parseJSON (Object o)
+      Nothing -> JSONRPCNotification <$> parseJSON (Object o)
 
 instance ToJSON JSONRPCMessage where
   toJSON (JSONRPCRequest req) = toJSON req
@@ -139,7 +138,7 @@ instance FromJSON JSONRPCRequestMessage where
     JSONRPCRequestMessage
       <$> o .: "id"
       <*> o .: "method"
-      <*> o .: "params"
+      <*> o .:? "params" .!= Null
 
 instance ToJSON JSONRPCRequestMessage where
   toJSON (JSONRPCRequestMessage reqId method params) =
@@ -170,7 +169,7 @@ instance FromJSON JSONRPCNotificationMessage where
   parseJSON = withObject "JSONRPCNotificationMessage" $ \o ->
     JSONRPCNotificationMessage
       <$> o .: "method"
-      <*> o .: "params"
+      <*> o .:? "params" .!= Null
 
 instance ToJSON JSONRPCNotificationMessage where
   toJSON (JSONRPCNotificationMessage method params) =

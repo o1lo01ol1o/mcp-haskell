@@ -115,7 +115,7 @@ registerGHCIDTools ghcidState = do
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.start",
+                { toolNameField = "ghcid-start",
                   toolDescription = Just "Start a new GHCID process for a Haskell project",
                   toolInputSchema =
                     case object
@@ -146,14 +146,14 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleStartGHCID ghcidState
           }
 
-  registerTool "ghcid.start" startTool
+  registerTool "ghcid-start" startTool
 
   -- Register stop GHCID tool
   let stopTool =
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.stop",
+                { toolNameField = "ghcid-stop",
                   toolDescription = Just "Stop a running GHCID process",
                   toolInputSchema =
                     case object
@@ -179,14 +179,14 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleStopGHCID ghcidState
           }
 
-  registerTool "ghcid.stop" stopTool
+  registerTool "ghcid-stop" stopTool
 
   -- Register restart GHCID tool
   let restartTool =
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.restart",
+                { toolNameField = "ghcid-restart",
                   toolDescription = Just "Restart a GHCID process",
                   toolInputSchema =
                     case object
@@ -212,14 +212,14 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleRestartGHCID ghcidState
           }
 
-  registerTool "ghcid.restart" restartTool
+  registerTool "ghcid-restart" restartTool
 
   -- Register status GHCID tool
   let statusTool =
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.status",
+                { toolNameField = "ghcid-status",
                   toolDescription = Just "Get status of a GHCID process",
                   toolInputSchema =
                     case object
@@ -240,14 +240,14 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleStatusGHCID ghcidState
           }
 
-  registerTool "ghcid.status" statusTool
+  registerTool "ghcid-status" statusTool
 
   -- Register messages GHCID tool
   let messagesTool =
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.messages",
+                { toolNameField = "ghcid-messages",
                   toolDescription = Just "Get compilation messages from a GHCID process",
                   toolInputSchema =
                     case object
@@ -278,14 +278,14 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleMessagesGHCID ghcidState
           }
 
-  registerTool "ghcid.messages" messagesTool
+  registerTool "ghcid-messages" messagesTool
 
   -- Register list GHCID tool
   let listTool =
         ToolDefinition
           { tdTool =
               Tool
-                { toolNameField = "ghcid.list",
+                { toolNameField = "ghcid-list",
                   toolDescription = Just "List all running GHCID processes",
                   toolInputSchema =
                     case object
@@ -305,126 +305,126 @@ registerGHCIDTools ghcidState = do
             tdHandler = Just $ handleListGHCID ghcidState
           }
 
-  registerTool "ghcid.list" listTool
+  registerTool "ghcid-list" listTool
 
   liftIO $ Log.logInfo "All GHCID tools registered successfully"
 
 -- | Handle start GHCID tool calls
 handleStartGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleStartGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.start request"
+  liftIO $ Log.logInfo "Handling ghcid-start request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> throw $ ValidationError "Missing arguments for ghcid.start"
-      Just argsObj -> return $ ToolsCallRequest "ghcid.start" (Just argsObj)
+      Nothing -> throw $ ValidationError "Missing arguments for ghcid-start"
+      Just argsObj -> return $ ToolsCallRequest "ghcid-start" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.start failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-start failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.start completed successfully"
+      liftIO $ Log.logInfo "ghcid-start completed successfully"
       return $ Right response
 
 -- | Handle stop GHCID tool calls
 handleStopGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleStopGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.stop request"
+  liftIO $ Log.logInfo "Handling ghcid-stop request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> throw $ ValidationError "Missing arguments for ghcid.stop"
-      Just argsObj -> return $ ToolsCallRequest "ghcid.stop" (Just argsObj)
+      Nothing -> throw $ ValidationError "Missing arguments for ghcid-stop"
+      Just argsObj -> return $ ToolsCallRequest "ghcid-stop" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.stop failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-stop failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.stop completed successfully"
+      liftIO $ Log.logInfo "ghcid-stop completed successfully"
       return $ Right response
 
 -- | Handle restart GHCID tool calls
 handleRestartGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleRestartGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.restart request"
+  liftIO $ Log.logInfo "Handling ghcid-restart request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> throw $ ValidationError "Missing arguments for ghcid.restart"
-      Just argsObj -> return $ ToolsCallRequest "ghcid.restart" (Just argsObj)
+      Nothing -> throw $ ValidationError "Missing arguments for ghcid-restart"
+      Just argsObj -> return $ ToolsCallRequest "ghcid-restart" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.restart failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-restart failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.restart completed successfully"
+      liftIO $ Log.logInfo "ghcid-restart completed successfully"
       return $ Right response
 
 -- | Handle status GHCID tool calls
 handleStatusGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleStatusGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.status request"
+  liftIO $ Log.logInfo "Handling ghcid-status request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> throw $ ValidationError "Missing arguments for ghcid.status"
-      Just argsObj -> return $ ToolsCallRequest "ghcid.status" (Just argsObj)
+      Nothing -> throw $ ValidationError "Missing arguments for ghcid-status"
+      Just argsObj -> return $ ToolsCallRequest "ghcid-status" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.status failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-status failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.status completed successfully"
+      liftIO $ Log.logInfo "ghcid-status completed successfully"
       return $ Right response
 
 -- | Handle messages GHCID tool calls
 handleMessagesGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleMessagesGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.messages request"
+  liftIO $ Log.logInfo "Handling ghcid-messages request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> throw $ ValidationError "Missing arguments for ghcid.messages"
-      Just argsObj -> return $ ToolsCallRequest "ghcid.messages" (Just argsObj)
+      Nothing -> throw $ ValidationError "Missing arguments for ghcid-messages"
+      Just argsObj -> return $ ToolsCallRequest "ghcid-messages" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.messages failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-messages failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.messages completed successfully"
+      liftIO $ Log.logInfo "ghcid-messages completed successfully"
       return $ Right response
 
 -- | Handle list GHCID tool calls
 handleListGHCID :: GHCIDServerState -> ToolHandlerContext ServerM -> Maybe Object -> ServerM (Either MCPError ToolsCallResponse)
 handleListGHCID ghcidState _ctx args = do
-  liftIO $ Log.logInfo "Handling ghcid.list request"
+  liftIO $ Log.logInfo "Handling ghcid-list request"
 
   result <- liftIO $ try @MCPError $ do
     toolsCallReq <- case args of
-      Nothing -> return $ ToolsCallRequest "ghcid.list" Nothing
-      Just argsObj -> return $ ToolsCallRequest "ghcid.list" (Just argsObj)
+      Nothing -> return $ ToolsCallRequest "ghcid-list" Nothing
+      Just argsObj -> return $ ToolsCallRequest "ghcid-list" (Just argsObj)
 
     executeGHCIDTool (ghcidRegistry ghcidState) toolsCallReq
 
   case result of
     Left mcpError -> do
-      liftIO $ Log.logError $ "ghcid.list failed: " <> T.pack (show mcpError)
+      liftIO $ Log.logError $ "ghcid-list failed: " <> T.pack (show mcpError)
       return $ Left mcpError
     Right response -> do
-      liftIO $ Log.logInfo "ghcid.list completed successfully"
+      liftIO $ Log.logInfo "ghcid-list completed successfully"
       return $ Right response

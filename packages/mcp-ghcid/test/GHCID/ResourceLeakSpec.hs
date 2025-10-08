@@ -38,7 +38,7 @@ spec = describe "GHCID.ResourceLeak" $ do
         
         -- Start multiple processes
         let uris = [CabalURI ("test://leak" <> T.pack (show i)) | i <- [1..3]]
-        startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir) uris
+        startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir Nothing []) uris
         
         -- Verify processes started
         let successfulStarts = length $ filter (either (const False) (const True)) startResults
@@ -66,7 +66,7 @@ spec = describe "GHCID.ResourceLeak" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://abrupt"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             case startResult of
               Left err -> expectationFailure $ "Failed to start process: " ++ T.unpack err
               Right handle -> do
@@ -156,7 +156,7 @@ spec = describe "GHCID.ResourceLeak" $ do
           -- Perform many start/stop operations
           replicateM_ 10 $ do
             let uri = CabalURI "test://memory"
-            _ <- startGHCIDProcess registry uri "."  -- Will likely fail, but shouldn't leak
+            _ <- startGHCIDProcess registry uri "." Nothing []  -- Will likely fail, but shouldn't leak
             _ <- stopGHCIDProcess registry uri
             return ()
           
@@ -179,7 +179,7 @@ spec = describe "GHCID.ResourceLeak" $ do
             
             -- Note: This is a simplified concurrent test
             -- In a real implementation we'd use async to run these concurrently
-            results <- mapM (\uri -> startGHCIDProcess registry uri tmpDir) uris
+            results <- mapM (\uri -> startGHCIDProcess registry uri tmpDir Nothing []) uris
             
             -- Stop all processes
             mapM_ (\uri -> void $ stopGHCIDProcess registry uri) uris
@@ -201,7 +201,7 @@ spec = describe "GHCID.ResourceLeak" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://handles"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             case startResult of
               Left err -> expectationFailure $ "Failed to start: " ++ T.unpack err
               Right handle -> do

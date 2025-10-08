@@ -49,12 +49,12 @@ spec = describe "mcp-obelisk" $ do
       sendRequest hin $ startRequest projectPath
       startResp <- readResponse hout 5000000
       case startResp of
-        Left err -> expectationFailure $ "obelisk.start failed: " <> err
+        Left err -> expectationFailure $ "obelisk-start failed: " <> err
         Right val -> do
-          validateToolResponse "obelisk.start" val
+          validateToolResponse "obelisk-start" val
           case extractToolText val of
             Just msg -> msg `shouldSatisfy` (\t -> "started" `T.isInfixOf` T.toLower t)
-            Nothing -> expectationFailure "obelisk.start response missing content"
+            Nothing -> expectationFailure "obelisk-start response missing content"
 
       statusResult <- pollForStatus (hin, hout) projectPath 40
       case statusResult of
@@ -69,12 +69,12 @@ spec = describe "mcp-obelisk" $ do
       sendRequest hin $ startRequest projectPath
       restartResp <- readResponse hout 5000000
       case restartResp of
-        Left err -> expectationFailure $ "obelisk.start restart failed: " <> err
+        Left err -> expectationFailure $ "obelisk-start restart failed: " <> err
         Right val -> do
-          validateToolResponse "obelisk.start" val
+          validateToolResponse "obelisk-start" val
           case extractToolText val of
             Just msg -> msg `shouldSatisfy` (\t -> "restarted" `T.isInfixOf` T.toLower t)
-            Nothing -> expectationFailure "obelisk.start restart response missing content"
+            Nothing -> expectationFailure "obelisk-start restart response missing content"
 
       restartStatus <- pollForStatus (hin, hout) projectPath 40
       case restartStatus of
@@ -90,14 +90,14 @@ spec = describe "mcp-obelisk" $ do
       sendRequest hin $ messagesRequest projectPath 5 (Just grepFilter)
       filteredResp <- readResponse hout 5000000
       case filteredResp of
-        Left err -> expectationFailure $ "obelisk.messages tail filter failed: " <> err
+        Left err -> expectationFailure $ "obelisk-messages tail filter failed: " <> err
         Right val -> do
-          validateToolResponse "obelisk.messages" val
+          validateToolResponse "obelisk-messages" val
           case extractToolText val of
-            Nothing -> expectationFailure "obelisk.messages response missing content"
+            Nothing -> expectationFailure "obelisk-messages response missing content"
             Just payload ->
               case decodeMessagePayload payload of
-                Left parseErr -> expectationFailure $ "Failed to decode obelisk.messages payload: " <> parseErr
+                Left parseErr -> expectationFailure $ "Failed to decode obelisk-messages payload: " <> parseErr
                 Right (outputTxt, linesList) -> do
                   length linesList `shouldSatisfy` (> 0)
                   linesList `shouldSatisfy` (any assertAllGood)
@@ -130,7 +130,7 @@ spec = describe "mcp-obelisk" $ do
       , "id" .= (2 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("obelisk.list" :: Text)
+          [ "name" .= ("obelisk-list" :: Text)
           ]
       ]
 
@@ -139,7 +139,7 @@ spec = describe "mcp-obelisk" $ do
       , "id" .= (3 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("obelisk.start" :: Text)
+          [ "name" .= ("obelisk-start" :: Text)
           , "arguments" .= object
               [ "projectPath" .= T.pack projectPath
               ]
@@ -151,7 +151,7 @@ spec = describe "mcp-obelisk" $ do
       , "id" .= (4 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("obelisk.stop" :: Text)
+          [ "name" .= ("obelisk-stop" :: Text)
           , "arguments" .= object
               [ "projectPath" .= T.pack projectPath
               ]
@@ -163,7 +163,7 @@ spec = describe "mcp-obelisk" $ do
       , "id" .= (reqId :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("obelisk.messages" :: Text)
+          [ "name" .= ("obelisk-messages" :: Text)
           , "arguments" .= object (
               [ "projectPath" .= T.pack projectPath
               , "limit" .= (80 :: Int)
@@ -182,7 +182,7 @@ spec = describe "mcp-obelisk" $ do
           case KM.lookup "instructions" obj of
             Just (String instr) -> do
               let lowerInstr = T.toLower instr
-              unless ("obelisk.start" `T.isInfixOf` lowerInstr
+              unless ("obelisk-start" `T.isInfixOf` lowerInstr
                       && ".cabal" `T.isInfixOf` lowerInstr
                       && "nix" `T.isInfixOf` lowerInstr
                       && "restart" `T.isInfixOf` lowerInstr) $

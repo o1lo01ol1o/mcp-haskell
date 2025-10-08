@@ -5,8 +5,9 @@ dist-newstyle
 .codex/sessions
 .codex/auth.json
 .codex/version.json
-.codex/history.json
+.codex/history.jsonl
 .direnv
 log
 skeleton.out
 command.out
+.cabal

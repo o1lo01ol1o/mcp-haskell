@@ -53,7 +53,7 @@ spec = describe "GHCID.ProcessRegistry" $ do
             let cabalURI = CabalURI "test://example"
             
             -- Start process
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             startResult `shouldSatisfy` either (const False) (const True)
             
             case startResult of
@@ -88,14 +88,14 @@ spec = describe "GHCID.ProcessRegistry" $ do
             let cabalURI = CabalURI "test://duplicate"
             
             -- Start first process
-            firstResult <- startGHCIDProcess registry cabalURI tmpDir
+            firstResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             firstResult `shouldSatisfy` either (const False) (const True)
             
             case firstResult of
               Left err -> expectationFailure $ "Failed to start first process: " ++ T.unpack err
               Right _ -> do
                 -- Try to start second process with same URI
-                secondResult <- startGHCIDProcess registry cabalURI tmpDir
+                secondResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
                 secondResult `shouldSatisfy` either (const True) (const False))
     
     it "can handle process that fails to start" $ withTestTimeout 15 $
@@ -107,7 +107,7 @@ spec = describe "GHCID.ProcessRegistry" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://failing"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             startResult `shouldSatisfy` either (const True) (const False))
   
   describe "Process communication" $ do
@@ -123,7 +123,7 @@ spec = describe "GHCID.ProcessRegistry" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://output"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             case startResult of
               Left err -> expectationFailure $ "Failed to start process: " ++ T.unpack err
               Right handle -> do
@@ -146,7 +146,7 @@ spec = describe "GHCID.ProcessRegistry" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://send"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             case startResult of
               Left err -> expectationFailure $ "Failed to start process: " ++ T.unpack err
               Right handle -> do
@@ -167,7 +167,7 @@ spec = describe "GHCID.ProcessRegistry" $ do
           (\registry -> do
             let cabalURI = CabalURI "test://health"
             
-            startResult <- startGHCIDProcess registry cabalURI tmpDir
+            startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
             case startResult of
               Left err -> expectationFailure $ "Failed to start process: " ++ T.unpack err
               Right _ -> do

@@ -42,6 +42,11 @@
           mcp-ghcid = self.lib.mkMcpGhcid {
             inherit system;
             ghcid = pkgs.ghcid;
+            shell = {
+              uri = ".";
+              attr = "runtime";
+              extraArgs = [ "--accept-flake-config" ];
+            };
           };
 
           # Make it the default package
@@ -52,9 +57,12 @@
       # Library functions for creating mcp-ghcid with custom ghcid
       lib = {
         # Main function to create mcp-ghcid with a provided ghcid derivation
-        # Usage: mkMcpGhcid { system = "x86_64-linux"; ghcid = myGhcidDerivation; }
+        # Usage: mkMcpGhcid { system = "x86_64-linux"; ghcid = myGhcidDerivation; shell = { uri = self.outPath; attr = "default"; }; }
         mkMcpGhcid =
-          { system, ghcid }:
+          { system
+          , ghcid
+          , shell ? null
+          }:
           let
             pkgs = import nixpkgs {
               inherit system;
@@ -73,19 +81,33 @@
 
             haskellPkg = haskellPkgs.mcp-ghcid;
 
-            # Create static executable
             staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
 
-          in
-          pkgs.runCommand "mcp-ghcid-with-ghcid"
-            {
-              buildInputs = [ pkgs.makeWrapper ];
-            }
-            ''
-              mkdir -p $out/bin
-              makeWrapper ${staticPkg}/bin/mcp-ghcid $out/bin/mcp-ghcid \
-                --prefix PATH : ${ghcid}/bin
+            realBinary = pkgs.writeShellScriptBin "mcp-ghcid-real" ''
+              export PATH=${pkgs.lib.makeBinPath [ ghcid ]}:$PATH
+              exec ${staticPkg}/bin/mcp-ghcid "$@"
             '';
+
+            shellTarget = if shell == null then null else (
+              let
+                uri = if shell ? uri then toString shell.uri else throw "mkMcpGhcid: shell.uri required when shell is set";
+                attrSuffix = if shell ? attr then "#${shell.attr}" else "";
+              in "${uri}${attrSuffix}"
+            );
+
+            nixExtraArgs = if shell == null then [] else pkgs.lib.optionals (shell ? extraArgs) shell.extraArgs;
+
+            escapedExtraArgs = if shell == null then "" else pkgs.lib.concatStringsSep " " (map pkgs.lib.escapeShellArg nixExtraArgs);
+            extraArgsSegment = if shell == null || nixExtraArgs == [] then "" else "${escapedExtraArgs} ";
+
+            launchScript = if shellTarget == null then ''
+              exec ${realBinary}/bin/mcp-ghcid-real "$@"
+            '' else ''
+              exec ${pkgs.nix}/bin/nix ${extraArgsSegment}develop ${pkgs.lib.escapeShellArg shellTarget} --command ${realBinary}/bin/mcp-ghcid-real "$@"
+            '';
+
+          in
+          pkgs.writeShellScriptBin "mcp-ghcid" launchScript;
       };
 
       devShells = forEachSystem (
@@ -113,10 +135,16 @@
 
                 packages = [
                   pkgs.hello
+                  pkgs.ghcid
                   # Add mcp-ghcid using the same GHC version as our Haskell development
                   (self.lib.mkMcpGhcid {
                     inherit system;
                     ghcid = pkgs.ghcid;
+                    shell = {
+                      uri = self.outPath;
+                      attr = "devShell";
+                      extraArgs = [ "--accept-flake-config" ];
+                    };
                   })
                 ];
 
@@ -183,6 +211,15 @@
 
                 processes.hello.exec = "hello";
               }
+            ];
+          };
+
+          runtime = pkgs.mkShell {
+            packages = [
+              pkgs.ghcid
+              pkgs.cabal-install
+              pkgs.nix
+              pkgs.haskell.packages.ghc948.ghc
             ];
           };
         }

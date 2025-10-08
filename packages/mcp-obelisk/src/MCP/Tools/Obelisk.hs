@@ -18,36 +18,36 @@ import MCP.SDK.Types
 -- coming from the MCP SDK to the process registry operations.
 executeObeliskTool :: ProcessRegistry -> ToolsCallRequest -> IO ToolsCallResponse
 executeObeliskTool registry ToolsCallRequest {..} =
-  case toolName of
-    "obelisk.list" -> do
+  case normalizedName of
+    "obelisk-list" -> do
       projects <- listProjects registry
       let result = ListResult (map unProjectId projects)
       pure $ successResponse (toJSON result)
 
-    "obelisk.start" ->
-      withArgs toolArguments $ \argsObj ->
+    "obelisk-start" ->
+      withArgsFor normalizedName toolArguments $ \argsObj ->
         case fromJSON (Object argsObj) of
-          Error err -> pure $ errorResponse $ "Invalid arguments for obelisk.start: " <> T.pack err
+          Error err -> invalidArgs normalizedName err
           Success StartArgs {..} -> do
             result <- startObeliskWatch registry (ProjectId startProjectPath)
             case result of
               Left errMsg -> pure $ errorResponse errMsg
               Right startRes -> pure $ successResponse (toJSON startRes)
 
-    "obelisk.stop" ->
-      withArgs toolArguments $ \argsObj ->
+    "obelisk-stop" ->
+      withArgsFor normalizedName toolArguments $ \argsObj ->
         case fromJSON (Object argsObj) of
-          Error err -> pure $ errorResponse $ "Invalid arguments for obelisk.stop: " <> T.pack err
+          Error err -> invalidArgs normalizedName err
           Success StopArgs {..} -> do
             result <- stopObeliskWatch registry (ProjectId stopProjectPath)
             case result of
               Left errMsg -> pure $ errorResponse errMsg
               Right stopRes -> pure $ successResponse (toJSON stopRes)
 
-    "obelisk.status" ->
-      withArgs toolArguments $ \argsObj ->
+    "obelisk-status" ->
+      withArgsFor normalizedName toolArguments $ \argsObj ->
         case fromJSON (Object argsObj) of
-          Error err -> pure $ errorResponse $ "Invalid arguments for obelisk.status: " <> T.pack err
+          Error err -> invalidArgs normalizedName err
           Success StatusArgs {..} -> do
             let projectId = ProjectId statusProjectPath
             status <- getObeliskStatus registry projectId
@@ -57,10 +57,10 @@ executeObeliskTool registry ToolsCallRequest {..} =
               , statusLastMessage = lastMsg
               }
 
-    "obelisk.messages" ->
-      withArgs toolArguments $ \argsObj ->
+    "obelisk-messages" ->
+      withArgsFor normalizedName toolArguments $ \argsObj ->
         case fromJSON (Object argsObj) of
-          Error err -> pure $ errorResponse $ "Invalid arguments for obelisk.messages: " <> T.pack err
+          Error err -> invalidArgs normalizedName err
           Success MessagesArgs {..} -> do
             result <- getObeliskMessages registry (ProjectId messagesProjectPath) messagesLimit messagesFilter
             case result of
@@ -70,8 +70,14 @@ executeObeliskTool registry ToolsCallRequest {..} =
     other ->
       pure $ errorResponse $ "Unknown obelisk tool: " <> other
   where
-    withArgs Nothing _ = pure $ errorResponse "Missing tool arguments"
-    withArgs (Just obj) action = action obj
+    normalizedName = normalize toolName
+
+    normalize = T.replace "." "-"
+
+    withArgsFor name Nothing _ = pure $ errorResponse $ "Missing tool arguments for " <> name
+    withArgsFor _ (Just obj) action = action obj
+
+    invalidArgs name err = pure $ errorResponse $ "Invalid arguments for " <> name <> ": " <> T.pack err
 
     successResponse value =
       ToolsCallResponse $

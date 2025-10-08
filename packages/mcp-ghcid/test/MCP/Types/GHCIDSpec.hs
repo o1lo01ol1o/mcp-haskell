@@ -26,8 +26,8 @@ spec = describe "MCP.Types.GHCID" $ do
   describe "Request data types" $ do
     it "can create StartGHCIDData" $ do
       let uri = CabalURI "test://start"
-      let startData = StartGHCIDArgs uri "." Nothing
-      show startData `shouldContain` "test://start"
+      let startData = StartGHCIDArgs uri "." Nothing Nothing
+      startData `seq` startCabalURI startData `shouldBe` uri
 
     it "can create StopGHCIDData" $ do
       let uri = CabalURI "test://stop"

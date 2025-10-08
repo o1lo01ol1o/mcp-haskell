@@ -142,7 +142,7 @@ pollForMessage (hin, hout) projectPath needle attempts = loop attempts Nothing
         , "id" .= (fromIntegral (attempts - n + 1) :: Int)
         , "method" .= ("tools/call" :: Text)
         , "params" .= object
-            [ "name" .= ("obelisk.messages" :: Text)
+            [ "name" .= ("obelisk-messages" :: Text)
             , "arguments" .= object
                 [ "projectPath" .= T.pack projectPath
                 , "limit" .= (80 :: Int)
@@ -183,7 +183,7 @@ pollForStatus (hin, hout) projectPath attempts = loop attempts Nothing
         , "id" .= (fromIntegral n :: Int)
         , "method" .= ("tools/call" :: Text)
         , "params" .= object
-            [ "name" .= ("obelisk.status" :: Text)
+            [ "name" .= ("obelisk-status" :: Text)
             , "arguments" .= object
                 [ "projectPath" .= T.pack projectPath
                 ]

@@ -7,12 +7,15 @@ module MCP.SDK.Logging
   , logWarn
   , logError
   , withLogging
+  , setLogLevel
+  , getLogLevel
   ) where
 
 import Control.Exception (IOException, catch)
 import Control.Monad (when)
 import Control.Monad.Logger (LoggingT)
 import qualified Control.Monad.Logger as Logger
+import Data.IORef (IORef, atomicWriteIORef, newIORef, readIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -36,6 +39,19 @@ import System.Log.FastLogger (fromLogStr)
 
 -- Log Level
 data LogLevel = Debug | Info | Warn | Error deriving (Show, Eq, Ord)
+
+defaultLogLevel :: LogLevel
+defaultLogLevel = Warn
+
+{-# NOINLINE loggingLevelRef #-}
+loggingLevelRef :: IORef LogLevel
+loggingLevelRef = unsafePerformIO (newIORef defaultLogLevel)
+
+setLogLevel :: LogLevel -> IO ()
+setLogLevel = atomicWriteIORef loggingLevelRef
+
+getLogLevel :: IO LogLevel
+getLogLevel = readIORef loggingLevelRef
 
 -- | Destination for logs.
 data LoggingTarget = LoggingTarget
@@ -77,11 +93,13 @@ acquireLoggingTarget = do
 -- | Write a formatted message to the active targets.
 logMessage :: LogLevel -> Text -> IO ()
 logMessage level msg = do
-  let line = "[" <> T.pack (show level) <> "] " <> msg
-      LoggingTarget h writeStderr = loggingTarget
-  TIO.hPutStrLn h line
-  hFlush h
-  when writeStderr $ TIO.hPutStrLn stderr line
+  currentLevel <- getLogLevel
+  when (level >= currentLevel) $ do
+    let line = "[" <> T.pack (show level) <> "] " <> msg
+        LoggingTarget h writeStderr = loggingTarget
+    TIO.hPutStrLn h line
+    hFlush h
+    when writeStderr $ TIO.hPutStrLn stderr line
 
 logDebug, logInfo, logWarn, logError :: Text -> IO ()
 logDebug = logMessage Debug

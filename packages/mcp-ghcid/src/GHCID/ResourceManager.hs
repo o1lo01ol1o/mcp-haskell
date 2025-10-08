@@ -84,7 +84,7 @@ withGHCIDProcess registry cabalURI workDir action = do
   logInfo $ "Starting GHCID process with resource management for " <> getCabalURI cabalURI
   
   result <- try @SomeException $ bracket
-    (startGHCIDProcess registry cabalURI workDir)
+    (startGHCIDProcess registry cabalURI workDir Nothing [])
     (\handleResult -> case handleResult of
       Left _ -> return () -- Nothing to cleanup if start failed
       Right handle -> void $ stopGHCIDProcess registry cabalURI)
@@ -107,7 +107,7 @@ bracketGHCIDProcess :: ProcessRegistry
                     -> (GHCIDHandle -> IO c)
                     -> IO (Either Text c)
 bracketGHCIDProcess registry cabalURI workDir acquire cleanup action = do
-  startResult <- startGHCIDProcess registry cabalURI workDir
+  startResult <- startGHCIDProcess registry cabalURI workDir Nothing []
   case startResult of
     Left err -> return $ Left err
     Right handle -> do
@@ -131,7 +131,7 @@ finallyGHCIDProcess :: ProcessRegistry
                     -> (GHCIDHandle -> IO b)
                     -> IO (Either Text a)
 finallyGHCIDProcess registry cabalURI workDir action finalAction = do
-  startResult <- startGHCIDProcess registry cabalURI workDir
+  startResult <- startGHCIDProcess registry cabalURI workDir Nothing []
   case startResult of
     Left err -> return $ Left err
     Right handle -> do
@@ -153,7 +153,7 @@ onExceptionGHCIDProcess :: ProcessRegistry
                         -> (GHCIDHandle -> IO b)
                         -> IO (Either Text a)
 onExceptionGHCIDProcess registry cabalURI workDir action exceptionAction = do
-  startResult <- startGHCIDProcess registry cabalURI workDir
+  startResult <- startGHCIDProcess registry cabalURI workDir Nothing []
   case startResult of
     Left err -> return $ Left err
     Right handle -> do

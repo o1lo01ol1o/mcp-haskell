@@ -7,20 +7,22 @@ module Utils.Logging
   , logWarn
   , logError
   , withLogging
+  , setLogLevel
+  , getLogLevel
   ) where
 
 import Control.Exception (IOException, catch)
 import Control.Monad (when)
-import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Logger (LoggingT, runLoggingT)
 import qualified Control.Monad.Logger as Logger
+import Data.IORef (IORef, atomicWriteIORef, newIORef, readIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.Encoding.Error as TE
 import qualified Data.Text.IO as TIO
-import System.Directory (createDirectoryIfMissing, getXdgDirectory)
+import System.Directory (XdgDirectory (XdgState), createDirectoryIfMissing, getXdgDirectory)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeDirectory)
 import System.IO
@@ -37,6 +39,19 @@ import System.Log.FastLogger (fromLogStr)
 
 -- Log Level
 data LogLevel = Debug | Info | Warn | Error deriving (Show, Eq, Ord)
+
+defaultLogLevel :: LogLevel
+defaultLogLevel = Warn
+
+{-# NOINLINE loggingLevelRef #-}
+loggingLevelRef :: IORef LogLevel
+loggingLevelRef = unsafePerformIO (newIORef defaultLogLevel)
+
+setLogLevel :: LogLevel -> IO ()
+setLogLevel = atomicWriteIORef loggingLevelRef
+
+getLogLevel :: IO LogLevel
+getLogLevel = readIORef loggingLevelRef
 
 -- | Destination for logs.
 data LoggingTarget = LoggingTarget
@@ -67,11 +82,13 @@ acquireLoggingTarget = do
 
 logMessage :: LogLevel -> Text -> IO ()
 logMessage level msg = do
-  let line = "[" <> T.pack (show level) <> "] " <> msg
-      target = loggingTarget
-  TIO.hPutStrLn (targetHandle target) line
-  hFlush (targetHandle target)
-  when (targetAlsoStderr target) $ TIO.hPutStrLn stderr line
+  currentLevel <- getLogLevel
+  when (level >= currentLevel) $ do
+    let line = "[" <> T.pack (show level) <> "] " <> msg
+        target = loggingTarget
+    TIO.hPutStrLn (targetHandle target) line
+    hFlush (targetHandle target)
+    when (targetAlsoStderr target) $ TIO.hPutStrLn stderr line
 
 logDebug, logInfo, logWarn, logError :: Text -> IO ()
 logDebug = logMessage Debug

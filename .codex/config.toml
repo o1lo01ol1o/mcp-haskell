@@ -9,7 +9,7 @@ wire_api = "responses"
 
 [mcp_servers.ghcid]
 command = "nix"
-args = ["run", ".#mcp-ghcid", "-c", "mcp-ghcid"]
+args = ["run", ".#mcp-ghcid", "--", "--log-level", "debug"]
 
 # OpenAI via Responses API (used for GPT-5)
 [model_providers.openai]

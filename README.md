@@ -114,17 +114,19 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - Comprehensive filtering and message formatting (`output` + `lines` are returned)
 
 **Available MCP Tools:**
-- `ghcid.start` – Start a new ghcid process for a project
-- `ghcid.stop` – Stop a running ghcid process  
-- `ghcid.restart` – Restart a ghcid process
-- `ghcid.status` – Get status of a ghcid process
-- `ghcid.messages` – Get compiler messages from ghcid (supports filtering)
-- `ghcid.clear` – Clear messages from a ghcid process
-- `ghcid.list` – List all active ghcid processes
+- `ghcid-start` – Start a new ghcid process for a project (automatically runs `cabal repl <package>` based on the supplied `.cabal` file or directory; override via `options.command` if you need something custom, or pass `component` to target a specific Cabal component)
+- `ghcid-stop` – Stop a running ghcid process  
+- `ghcid-restart` – Restart a ghcid process
+- `ghcid-status` – Get status of a ghcid process
+- `ghcid-messages` – Get compiler messages from ghcid (supports filtering)
+- `ghcid-clear` – Clear messages from a ghcid process
+- `ghcid-list` – List all active ghcid processes
 
 **Message filtering**
 
-`ghcid.messages` accepts an optional `filter` object allowing servers or clients to focus on relevant diagnostics.
+`ghcid-messages` accepts an optional `filter` object allowing servers or clients to focus on relevant diagnostics.
+
+When starting, include an optional `component` field to target a specific Cabal component (for example `"component": "lib:mcp-common"`). If omitted, `mcp-ghcid` will automatically load the primary library component of the `.cabal` file. Output now includes both stdout and stderr (stderr lines are prefixed with `[stderr]`).
 
 ```jsonc
 {
@@ -132,7 +134,7 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
   "id": 8,
   "method": "tools/call",
   "params": {
-    "name": "ghcid.messages",
+    "name": "ghcid-messages",
     "arguments": {
       "cabalURI": "file:///path/to/project",
       "count": 80,
@@ -149,21 +151,21 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 An MCP server that wraps `ob watch` for Obelisk projects.
 
 **Features:**
-- Start/stop/restart `ob watch` processes (restarts are implicit via `obelisk.start`)
+- Start/stop/restart `ob watch` processes (restarts are implicit via `obelisk-start`)
 - Structured status reporting (`running`, `starting`, `errored`, etc.)
 - Log streaming with the same filtering options as `mcp-ghcid`
 - Instructional guidance returned during `initialize`
 
 **Available MCP Tools:**
-- `obelisk.start` – Start or restart `ob watch`
-- `obelisk.stop` – Stop `ob watch`
-- `obelisk.status` – Get current status (including last log line)
-- `obelisk.messages` – Fetch recent log output (supports filters)
-- `obelisk.list` – List active Obelisk projects managed by the server
+- `obelisk-start` – Start or restart `ob watch`
+- `obelisk-stop` – Stop `ob watch`
+- `obelisk-status` – Get current status (including last log line)
+- `obelisk-messages` – Fetch recent log output (supports filters)
+- `obelisk-list` – List active Obelisk projects managed by the server
 
 **Message filtering**
 
-`obelisk.messages` exposes the same filter schema as `ghcid.messages`. Example request:
+`obelisk-messages` exposes the same filter schema as `ghcid-messages`. Example request:
 
 ```jsonc
 {
@@ -171,7 +173,7 @@ An MCP server that wraps `ob watch` for Obelisk projects.
   "id": 12,
   "method": "tools/call",
   "params": {
-    "name": "obelisk.messages",
+    "name": "obelisk-messages",
     "arguments": {
       "projectPath": "/path/to/obelisk-app",
       "limit": 120,

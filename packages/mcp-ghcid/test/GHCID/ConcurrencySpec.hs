@@ -41,7 +41,7 @@ spec = describe "GHCID.Concurrency" $ do
                 -- Start processes concurrently
                 asyncActions <- forM (zip [1 ..] uris) $ \(i, uri) -> async $ do
                   threadDelay (i * 100000) -- Stagger starts slightly
-                  startGHCIDProcess registry uri tmpDir
+                  startGHCIDProcess registry uri tmpDir Nothing []
 
                 results <- mapM wait asyncActions
                 let successes = length $ filter (either (const False) (const True)) results
@@ -70,8 +70,8 @@ spec = describe "GHCID.Concurrency" $ do
                 let cabalURI = CabalURI "test://startstop"
 
                 -- Create competing start/stop operations
-                startAsync1 <- async $ startGHCIDProcess registry cabalURI tmpDir
-                startAsync2 <- async $ startGHCIDProcess registry cabalURI tmpDir -- Should fail
+                startAsync1 <- async $ startGHCIDProcess registry cabalURI tmpDir Nothing []
+                startAsync2 <- async $ startGHCIDProcess registry cabalURI tmpDir Nothing [] -- Should fail
                 stopAsync <- async $ do
                   threadDelay 500000 -- Wait a bit
                   stopGHCIDProcess registry cabalURI
@@ -101,7 +101,7 @@ spec = describe "GHCID.Concurrency" $ do
                 let uris = [CabalURI ("test://list" <> T.pack (show i)) | i <- [1 .. 5]]
 
                 -- Start some processes
-                startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir) uris
+                startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir Nothing []) uris
                 let successfulURIs = [uri | (uri, Right _) <- zip uris startResults]
 
                 -- List processes concurrently from multiple threads
@@ -132,7 +132,7 @@ spec = describe "GHCID.Concurrency" $ do
                 let cabalURI = CabalURI "test://health"
 
                 -- Start a process
-                startResult <- startGHCIDProcess registry cabalURI tmpDir
+                startResult <- startGHCIDProcess registry cabalURI tmpDir Nothing []
                 case startResult of
                   Left err -> expectationFailure $ "Failed to start process: " ++ T.unpack err
                   Right _ -> do
@@ -160,7 +160,7 @@ spec = describe "GHCID.Concurrency" $ do
             -- Create many concurrent operations that modify the registry
             operations <- sequence $ replicate 20 $ async $ do
               let uri = CabalURI "test://stm"
-              _ <- startGHCIDProcess registry uri "." -- Will likely fail, but tests STM
+              _ <- startGHCIDProcess registry uri "." Nothing [] -- Will likely fail, but tests STM
               _ <- stopGHCIDProcess registry uri
               listActiveProcesses registry
 
@@ -190,7 +190,7 @@ spec = describe "GHCID.Concurrency" $ do
                 attemptAsyncs <-
                   replicateM attempts $
                     async $
-                      startGHCIDProcess registry cabalURI tmpDir
+                      startGHCIDProcess registry cabalURI tmpDir Nothing []
 
                 results <- mapM wait attemptAsyncs
 
@@ -215,7 +215,7 @@ spec = describe "GHCID.Concurrency" $ do
             -- Perform rapid start/stop cycles
             replicateM_ 20 $ do
               let uri = CabalURI "test://rapid"
-              _ <- startGHCIDProcess registry uri "." -- Most will fail, testing robustness
+              _ <- startGHCIDProcess registry uri "." Nothing [] -- Most will fail, testing robustness
               _ <- stopGHCIDProcess registry uri
               return ()
 
@@ -236,7 +236,7 @@ spec = describe "GHCID.Concurrency" $ do
                 let uris = [CabalURI ("test://monitor" <> T.pack (show i)) | i <- [1 .. 3]]
 
                 -- Start a few processes
-                startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir) uris
+                startResults <- mapM (\uri -> startGHCIDProcess registry uri tmpDir Nothing []) uris
                 let successfulURIs = [uri | (uri, Right _) <- zip uris startResults]
 
                 when (not $ null successfulURIs) $ do

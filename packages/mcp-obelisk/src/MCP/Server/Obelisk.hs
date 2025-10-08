@@ -91,55 +91,55 @@ registerObeliskTools :: ObeliskServerState -> ServerM ()
 registerObeliskTools state = do
   let startTool = ToolDefinition
         { tdTool = Tool
-            { toolNameField = "obelisk.start"
+            { toolNameField = "obelisk-start"
             , toolDescription = Just "Start ob watch for an Obelisk project"
             , toolInputSchema = startSchema
             }
-        , tdHandler = Just $ callHandler state "obelisk.start"
+        , tdHandler = Just $ callHandler state "obelisk-start"
         }
 
       stopTool = ToolDefinition
         { tdTool = Tool
-            { toolNameField = "obelisk.stop"
+            { toolNameField = "obelisk-stop"
             , toolDescription = Just "Stop ob watch for an Obelisk project"
             , toolInputSchema = startSchema
             }
-        , tdHandler = Just $ callHandler state "obelisk.stop"
+        , tdHandler = Just $ callHandler state "obelisk-stop"
         }
 
       statusTool = ToolDefinition
         { tdTool = Tool
-            { toolNameField = "obelisk.status"
+            { toolNameField = "obelisk-status"
             , toolDescription = Just "Get status for an ob watch process"
             , toolInputSchema = startSchema
             }
-        , tdHandler = Just $ callHandler state "obelisk.status"
+        , tdHandler = Just $ callHandler state "obelisk-status"
         }
 
       messagesTool = ToolDefinition
         { tdTool = Tool
-            { toolNameField = "obelisk.messages"
+            { toolNameField = "obelisk-messages"
             , toolDescription = Just "Fetch recent output from ob watch"
             , toolInputSchema = messagesSchema
             }
-        , tdHandler = Just $ callHandler state "obelisk.messages"
+        , tdHandler = Just $ callHandler state "obelisk-messages"
         }
 
       listTool = ToolDefinition
         { tdTool = Tool
-            { toolNameField = "obelisk.list"
+            { toolNameField = "obelisk-list"
             , toolDescription = Just "List active ob watch processes"
             , toolInputSchema = listSchema
             }
-        , tdHandler = Just $ callHandler state "obelisk.list"
+        , tdHandler = Just $ callHandler state "obelisk-list"
         }
 
   mapM_ (uncurry registerToolSilently)
-    [ ("obelisk.start", startTool)
-    , ("obelisk.stop", stopTool)
-    , ("obelisk.status", statusTool)
-    , ("obelisk.messages", messagesTool)
-    , ("obelisk.list", listTool)
+    [ ("obelisk-start", startTool)
+    , ("obelisk-stop", stopTool)
+    , ("obelisk-status", statusTool)
+    , ("obelisk-messages", messagesTool)
+    , ("obelisk-list", listTool)
     ]
 
 startSchema :: Object

@@ -540,9 +540,13 @@ instance ToJSON InitializeResponse where
        ] ++ maybe [] (\instr -> ["instructions" .= instr]) instructions)
 
 instance FromJSON ToolsListRequest where
-  parseJSON = withObject "ToolsListRequest" $ \o ->
-    ToolsListRequest
-      <$> o .:? "cursor"
+  parseJSON Null = pure (ToolsListRequest Nothing)
+  parseJSON v =
+    withObject "ToolsListRequest" (
+      \o ->
+        ToolsListRequest
+          <$> o .:? "cursor"
+      ) v
 
 instance ToJSON ToolsListRequest where
   toJSON (ToolsListRequest cursor) =
