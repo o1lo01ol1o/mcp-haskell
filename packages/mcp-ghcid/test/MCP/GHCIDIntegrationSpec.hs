@@ -22,6 +22,7 @@ import Test.Utils
   , withMCPGhcidServer
   , withTestHaskellProject
   , extractToolText
+  , decodeStatusPayload
   )
 
 spec :: Spec
@@ -65,17 +66,34 @@ spec = describe "mcp-ghcid" $ do
         sendRequest hin $ startRequest cabalUri workDirTxt
         startResp <- readResponse hout 10000000
         case startResp of
-          Left err -> expectationFailure $ "ghcid.start failed: " <> err
+          Left err -> expectationFailure $ "ghcid-start failed: " <> err
           Right val -> do
-            validateToolResponse "ghcid.start" val
+            validateToolResponse "ghcid-start" val
             case extractToolText val of
               Just msg -> msg `shouldSatisfy` (\t -> "started" `T.isInfixOf` T.toLower t)
-              Nothing -> expectationFailure "ghcid.start response missing content"
+              Nothing -> expectationFailure "ghcid-start response missing content"
+
+        sendRequest hin $ statusRequest cabalUri
+        initialStatusResp <- readResponse hout 10000000
+        case initialStatusResp of
+          Left err -> expectationFailure $ "ghcid-status failed: " <> err
+          Right val -> do
+            validateToolResponse "ghcid-status" val
+            case extractToolText val of
+              Nothing -> expectationFailure "ghcid-status response missing content"
+              Just payload ->
+                case decodeStatusPayload payload of
+                  Left parseErr -> expectationFailure $ "Failed to decode ghcid-status payload: " <> parseErr
+                  Right (stateTxt, _, _, latestMsg) -> do
+                    stateTxt `shouldBe` "starting"
+                    case latestMsg of
+                      Nothing -> expectationFailure "Expected latest message while ghcid is starting"
+                      Just latest -> latest `shouldSatisfy` (not . T.null)
 
         statusResult <- pollForStatus (hin, hout) cabalUri 40
         case statusResult of
           Left err -> expectationFailure err
-          Right (stateTxt, _, _) -> stateTxt `shouldBe` "running"
+          Right (stateTxt, _, _, _) -> stateTxt `shouldBe` "running"
 
         firstAllGood <- pollForMessage (hin, hout) cabalUri "all good" 20
         case firstAllGood of
@@ -85,17 +103,17 @@ spec = describe "mcp-ghcid" $ do
         sendRequest hin $ restartRequest cabalUri workDirTxt
         restartResp <- readResponse hout 10000000
         case restartResp of
-          Left err -> expectationFailure $ "ghcid.restart failed: " <> err
+          Left err -> expectationFailure $ "ghcid-restart failed: " <> err
           Right val -> do
-            validateToolResponse "ghcid.restart" val
+            validateToolResponse "ghcid-restart" val
             case extractToolText val of
               Just msg -> msg `shouldSatisfy` (\t -> "restart" `T.isInfixOf` T.toLower t)
-              Nothing -> expectationFailure "ghcid.restart response missing content"
+              Nothing -> expectationFailure "ghcid-restart response missing content"
 
         restartStatus <- pollForStatus (hin, hout) cabalUri 40
         case restartStatus of
           Left err -> expectationFailure err
-          Right (stateTxt, _, _) -> stateTxt `shouldBe` "running"
+          Right (stateTxt, _, _, _) -> stateTxt `shouldBe` "running"
 
         secondAllGood <- pollForMessage (hin, hout) cabalUri "all good" 20
         case secondAllGood of
@@ -105,8 +123,8 @@ spec = describe "mcp-ghcid" $ do
         sendRequest hin $ stopRequest cabalUri
         stopResp <- readResponse hout 5000000
         case stopResp of
-          Left err -> expectationFailure $ "ghcid.stop failed: " <> err
-          Right val -> validateToolResponse "ghcid.stop" val
+          Left err -> expectationFailure $ "ghcid-stop failed: " <> err
+          Right val -> validateToolResponse "ghcid-stop" val
   where
     initializeRequest = object
       [ "jsonrpc" .= ("2.0" :: Text)
@@ -132,7 +150,7 @@ spec = describe "mcp-ghcid" $ do
       , "id" .= (2 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("ghcid.list" :: Text)
+          [ "name" .= ("ghcid-list" :: Text)
           , "arguments" .= object
               [ "includeStatus" .= False
               ]
@@ -144,10 +162,11 @@ spec = describe "mcp-ghcid" $ do
       , "id" .= (3 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("ghcid.start" :: Text)
+          [ "name" .= ("ghcid-start" :: Text)
           , "arguments" .= object
               [ "cabalURI" .= cabalUri
               , "workDir" .= workDirTxt
+              , "component" .= ("test-project:lib" :: Text)
               ]
           ]
       ]
@@ -157,10 +176,23 @@ spec = describe "mcp-ghcid" $ do
       , "id" .= (4 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("ghcid.restart" :: Text)
+          [ "name" .= ("ghcid-restart" :: Text)
           , "arguments" .= object
               [ "cabalURI" .= cabalUri
               , "workDir" .= workDirTxt
+              , "component" .= ("test-project:lib" :: Text)
+              ]
+          ]
+      ]
+
+    statusRequest cabalUri = object
+      [ "jsonrpc" .= ("2.0" :: Text)
+      , "id" .= (6 :: Int)
+      , "method" .= ("tools/call" :: Text)
+      , "params" .= object
+          [ "name" .= ("ghcid-status" :: Text)
+          , "arguments" .= object
+              [ "cabalURI" .= cabalUri
               ]
           ]
       ]
@@ -170,7 +202,7 @@ spec = describe "mcp-ghcid" $ do
       , "id" .= (5 :: Int)
       , "method" .= ("tools/call" :: Text)
       , "params" .= object
-          [ "name" .= ("ghcid.stop" :: Text)
+          [ "name" .= ("ghcid-stop" :: Text)
           , "arguments" .= object
               [ "cabalURI" .= cabalUri
               , "force" .= False
@@ -188,8 +220,8 @@ spec = describe "mcp-ghcid" $ do
           case KM.lookup "instructions" obj of
             Just (String instr) -> do
               let lowerInstr = T.toLower instr
-              unless ("ghcid.start" `T.isInfixOf` lowerInstr
-                      && "ghcid.restart" `T.isInfixOf` lowerInstr
+              unless ("ghcid-start" `T.isInfixOf` lowerInstr
+                      && "ghcid-restart" `T.isInfixOf` lowerInstr
                       && ".cabal" `T.isInfixOf` lowerInstr
                       && "server" `T.isInfixOf` lowerInstr) $
                 expectationFailure "Server instructions missing restart guidance"

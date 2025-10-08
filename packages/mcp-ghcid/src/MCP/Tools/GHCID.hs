@@ -15,22 +15,23 @@ module MCP.Tools.GHCID
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Exception (SomeException, try)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
--- MCP SDK imports
-
--- Internal imports
-
-import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy as BL
+import Data.Char (isSpace)
+import Data.List (find)
+import Data.Maybe (listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import qualified Data.Vector as V
-import GHCID.Client (GHCIDClient, createGHCIDClient, getCurrentOutput, startGHCID, stopGHCID)
-import GHCID.Config (GHCIDConfig (..), defaultGHCIDConfig)
+import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeExtension, takeFileName, (</>))
 import GHCID.Filter (FilterRequest (..), applyShellFilter)
-import GHCID.Output (formatCompilerMessage)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
 import qualified GHCID.ProcessRegistry as PR
 import MCP.SDK.Types (Content (TextContent), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
@@ -62,13 +63,23 @@ startGHCIDProcess registry args = do
 
   result <- try $ do
     case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.start"
+      Nothing -> return $ Left "Missing arguments for ghcid-start"
       Just argsObject -> case fromJSON (Object argsObject) of
         Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
         Success startArgs -> do
           let cabalURI = startCabalURI startArgs
               workDir = startWorkDir startArgs
-              options = startOptions startArgs
+              requestedComponent = startComponent startArgs
+              (commandSpecOverride, extraArgsTexts) = normalizeStartOptions (startOptions startArgs)
+          resolvedSpec <- liftIO $ resolveCommandSpec cabalURI workDir commandSpecOverride requestedComponent
+          let commandOverride = renderCommandSpec resolvedSpec
+              extraArgs = map T.unpack extraArgsTexts
+          logDebug $
+            "Launching ghcid for "
+              <> getCabalURI cabalURI
+              <> " with command: "
+              <> commandOverride
+              <> (if null extraArgsTexts then "" else " " <> T.unwords extraArgsTexts)
 
           -- Check if process already exists
           existing <- PR.getGHCIDProcess registry cabalURI
@@ -76,7 +87,7 @@ startGHCIDProcess registry args = do
             Just _ -> return $ Left "GHCID process already running for this project"
             Nothing -> do
               -- Start the process using ProcessRegistry
-              startResult <- PR.startGHCIDProcess registry cabalURI workDir
+              startResult <- PR.startGHCIDProcess registry cabalURI workDir (Just commandOverride) extraArgs
 
               case startResult of
                 Left err -> return $ Left err
@@ -88,7 +99,7 @@ startGHCIDProcess registry args = do
                             startProcessId = Just $ getCabalURI cabalURI
                           }
 
-                  return $ Right $ T.pack $ show $ toJSON resultData
+                  return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -110,7 +121,7 @@ startGHCIDProcess registry args = do
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
 
 -- | Stop a running GHCID process
@@ -120,18 +131,18 @@ stopGHCIDProcess registry args = do
 
   result <- try $ do
     case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.stop"
+      Nothing -> return $ Left "Missing arguments for ghcid-stop"
       Just argsObject -> case fromJSON (Object argsObject) of
         Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
         Success stopArgs -> do
           let cabalURI = stopCabalURI stopArgs
-              force = stopForce stopArgs
+              _force = stopForce stopArgs
 
           -- Look up the process
           existing <- PR.getGHCIDProcess registry cabalURI
           case existing of
             Nothing -> return $ Left "No GHCID process running for this project"
-            Just ghcidClient -> do
+            Just _ -> do
               -- Stop the process
               stopResult <- PR.stopGHCIDProcess registry cabalURI
 
@@ -144,7 +155,7 @@ stopGHCIDProcess registry args = do
                             stopMessage = "GHCID process stopped successfully"
                           }
 
-                  return $ Right $ T.pack $ show $ toJSON resultData
+                  return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -166,7 +177,7 @@ stopGHCIDProcess registry args = do
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
 
 -- | Restart a GHCID process
@@ -176,18 +187,19 @@ restartGHCIDProcess registry args = do
 
   result <- try $ do
     case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.restart"
+      Nothing -> return $ Left "Missing arguments for ghcid-restart"
       Just argsObject -> case fromJSON (Object argsObject) of
         Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
         Success restartArgs -> do
           let cabalURI = restartCabalURI restartArgs
               newWorkDir = restartWorkDir restartArgs
+              requestedComponent = restartComponent restartArgs
 
           -- Look up the existing process
           existing <- PR.getGHCIDProcess registry cabalURI
           oldProcessId <- case existing of
             Nothing -> return Nothing
-            Just ghcidClient -> do
+            Just _ -> do
               -- Stop the existing process
               stopResult <- PR.stopGHCIDProcess registry cabalURI
               case stopResult of
@@ -197,7 +209,14 @@ restartGHCIDProcess registry args = do
           -- Start new process
           let workDir = maybe (T.unpack $ getCabalURI cabalURI) id newWorkDir
 
-          startResult <- PR.startGHCIDProcess registry cabalURI workDir
+          resolvedSpec <- liftIO $ resolveCommandSpec cabalURI workDir Nothing requestedComponent
+          let commandOverride = renderCommandSpec resolvedSpec
+          logDebug $
+            "Restart launching ghcid for "
+              <> getCabalURI cabalURI
+              <> " with command: "
+              <> commandOverride
+          startResult <- PR.startGHCIDProcess registry cabalURI workDir (Just commandOverride) []
 
           case startResult of
             Left err -> return $ Left err
@@ -210,7 +229,7 @@ restartGHCIDProcess registry args = do
                         restartNewProcessId = Just $ getCabalURI cabalURI
                       }
 
-              return $ Right $ T.pack $ show $ toJSON resultData
+              return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -232,7 +251,7 @@ restartGHCIDProcess registry args = do
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
 
 -- | Get status of a GHCID process
@@ -242,7 +261,7 @@ getGHCIDStatus registry args = do
 
   result <- try $ do
     case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.status"
+      Nothing -> return $ Left "Missing arguments for ghcid-status"
       Just argsObject -> case fromJSON (Object argsObject) of
         Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
         Success statusArgs -> do
@@ -253,16 +272,24 @@ getGHCIDStatus registry args = do
           status <- case existing of
             Nothing -> return Nothing
             Just handle -> Just <$> PR.getProcessStatus handle
+          lastMessage <- case existing of
+            Nothing -> return Nothing
+            Just handle -> PR.getProcessLastMessage handle
+          let latestMessage =
+                case (status, lastMessage) of
+                  (Just GHCIDStarting, Nothing) -> Just "ghcid is starting; no output yet"
+                  _ -> lastMessage
 
           let resultData =
                 ProcessStatusResult
                   { processStatus = status,
                     processUptime = case existing of
                       Nothing -> Nothing
-                      Just _ -> Just "unknown" -- Could implement uptime tracking
+                      Just _ -> Just "unknown", -- Could implement uptime tracking
+                    processLatestMessage = latestMessage
                   }
 
-          return $ Right $ T.pack $ show $ toJSON resultData
+          return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -283,7 +310,7 @@ getGHCIDStatus registry args = do
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
 
 -- | Get messages from a GHCID process
@@ -293,7 +320,7 @@ getGHCIDMessages registry args = do
 
   result <- try $ do
     case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.messages"
+      Nothing -> return $ Left "Missing arguments for ghcid-messages"
       Just argsObject -> case fromJSON (Object argsObject) of
         Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
         Success messagesArgs -> do
@@ -302,14 +329,12 @@ getGHCIDMessages registry args = do
               count = messagesCount messagesArgs
 
           -- Look up the process
-          existing <- PR.getGHCIDProcess registry cabalURI
-          case existing of
+          maybeHandle <- PR.getGHCIDProcess registry cabalURI
+          case maybeHandle of
             Nothing -> return $ Left "No GHCID process running for this project"
-            Just ghcidClient -> do
+            Just handle -> do
               -- Get messages from the client
-              messages <- case existing of
-                Nothing -> return []
-                Just handle -> T.lines <$> PR.getBufferedOutput handle
+              messages <- T.lines <$> PR.getBufferedOutput handle
 
               -- Apply filtering if requested
               filteredMessages <- case filterReq of
@@ -333,7 +358,7 @@ getGHCIDMessages registry args = do
                         messagesTimestamp = timestamp
                       }
 
-              return $ Right $ T.pack $ show $ toJSON resultData
+              return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -354,7 +379,7 @@ getGHCIDMessages registry args = do
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
 
 -- | List all GHCID processes
@@ -363,37 +388,39 @@ listGHCIDProcesses registry args = do
   logInfo "Listing GHCID processes"
 
   result <- try $ do
-    case args of
-      Nothing -> return $ Left "Missing arguments for ghcid.list"
-      Just argsObject -> case fromJSON (Object argsObject) of
-        Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
-        Success listArgs -> do
-          let includeStatus = listIncludeStatus listArgs
+    let parsedArgs = case args of
+          Nothing -> Success (ListProcessesArgs False)
+          Just argsObject -> fromJSON (Object argsObject)
 
-          -- Get all registered processes
-          processes <- PR.listActiveProcesses registry
+    case parsedArgs of
+      Data.Aeson.Error err -> return $ Left $ T.pack $ "Invalid arguments: " <> err
+      Success listArgs -> do
+        let includeStatus = listIncludeStatus listArgs
 
-          statusInfo <-
-            if includeStatus
-              then do
-                handles <- mapM (PR.getGHCIDProcess registry) processes
-                statuses <-
-                  mapM
-                    ( \mh -> case mh of
-                        Nothing -> return Nothing
-                        Just h -> Just <$> PR.getProcessStatus h
-                    )
-                    handles
-                return $ Just $ zip processes (map (maybe GHCIDStopped id) statuses)
-              else return Nothing
+        -- Get all registered processes
+        processes <- PR.listActiveProcesses registry
 
-          let resultData =
-                ProcessListResult
-                  { processURIs = processes,
-                    processStatuses = statusInfo
-                  }
+        statusInfo <-
+          if includeStatus
+            then do
+              handles <- mapM (PR.getGHCIDProcess registry) processes
+              statuses <-
+                mapM
+                  ( \mh -> case mh of
+                      Nothing -> return Nothing
+                      Just h -> Just <$> PR.getProcessStatus h
+                  )
+                  handles
+              return $ Just $ zip processes (map (maybe GHCIDStopped id) statuses)
+            else return Nothing
 
-          return $ Right $ T.pack $ show $ toJSON resultData
+        let resultData =
+              ProcessListResult
+                { processURIs = processes,
+                  processStatuses = statusInfo
+                }
+
+        return $ Right $ toJSON resultData
 
   case result of
     Left (ex :: SomeException) -> do
@@ -410,9 +437,112 @@ listGHCIDProcesses registry args = do
           ToolCallResult
             (V.fromList [TextContent $ "Failed to list GHCID processes: " <> err])
             (Just True)
-    Right (Right response) -> do
+    Right (Right response) ->
       return $
         ToolsCallResponse $
           ToolCallResult
-            (V.fromList [TextContent response])
+            (V.fromList [TextContent (jsonToText response)])
             Nothing
+
+normalizeStartOptions :: Maybe StartGHCIDOptions -> (Maybe CommandSpec, [Text])
+normalizeStartOptions Nothing = (Nothing, [])
+normalizeStartOptions (Just StartGHCIDOptions {..}) = (startCommandSpec, startAdditionalArgs)
+
+renderCommandSpec :: CommandSpec -> Text
+renderCommandSpec (CommandString t) = t
+renderCommandSpec (CommandList parts) = renderCommandParts parts
+
+renderCommandParts :: [Text] -> Text
+renderCommandParts = T.unwords . map quotePart
+  where
+    quotePart part
+      | needsQuote part = "\"" <> T.concatMap escapeChar part <> "\""
+      | otherwise = part
+
+    needsQuote txt = T.null txt || T.any isSpace txt || T.any (`elem` ['"', '\\']) txt
+
+    escapeChar '"' = T.pack "\\\""
+    escapeChar '\\' = T.pack "\\\\"
+    escapeChar c = T.singleton c
+
+jsonToText :: Value -> Text
+jsonToText = TE.decodeUtf8 . BL.toStrict . encode
+
+resolveCommandSpec :: CabalURI -> FilePath -> Maybe CommandSpec -> Maybe Text -> IO CommandSpec
+resolveCommandSpec cabalURI workDir overrideSpec componentOverride =
+  case overrideSpec of
+    Just spec -> pure spec
+    Nothing -> deriveDefaultCommandSpec cabalURI workDir componentOverride
+
+deriveDefaultCommandSpec :: CabalURI -> FilePath -> Maybe Text -> IO CommandSpec
+deriveDefaultCommandSpec cabalURI workDir componentOverride = do
+  let rawPath = T.unpack (getCabalURI cabalURI)
+  resolved <- resolveCabalFilePath workDir rawPath
+  case resolved of
+    Nothing -> do
+      logWarn $ "cabal file not found for " <> getCabalURI cabalURI <> "; defaulting to 'cabal repl'"
+      pure (CommandString "cabal repl")
+    Just cabalFile -> do
+      contents <- TIO.readFile cabalFile
+      let cabalLines = T.lines contents
+          pkgName = extractPackageName cabalLines
+          hasLib = hasLibraryStanza cabalLines
+      case fmap T.strip componentOverride of
+        Just comp | not (T.null comp) -> do
+          logDebug $ "Using requested component '" <> comp <> "' for " <> T.pack cabalFile
+          pure (CommandList ((map T.pack ["cabal", "repl"]) ++ [comp]))
+        _ ->
+          case pkgName of
+            Nothing -> do
+              logWarn $ "Could not determine package name from cabal file " <> T.pack cabalFile <> "; defaulting to 'cabal repl'"
+              pure (CommandString "cabal repl")
+            Just name -> do
+              let target = if hasLib then "lib:" <> name else name
+              logDebug $ "Detected package name '" <> name <> "' from " <> T.pack cabalFile <> "; using target '" <> target <> "'"
+              pure (CommandList ((map T.pack ["cabal", "repl"]) ++ [target]))
+
+resolveCabalFilePath :: FilePath -> FilePath -> IO (Maybe FilePath)
+resolveCabalFilePath workDir rawPath = do
+  let candidate = if isAbsolute rawPath then rawPath else workDir </> rawPath
+  fileExists <- doesFileExist candidate
+  if fileExists
+    then pure (Just candidate)
+    else do
+      dirExists <- doesDirectoryExist candidate
+      if not dirExists
+        then pure Nothing
+        else do
+          entries <- listDirectory candidate
+          let cabalFiles = filter ((== ".cabal") . takeExtension) entries
+              expected = takeFileName (dropTrailingPathSeparator rawPath) <> ".cabal"
+              preferred = find (== expected) cabalFiles <|> listToMaybe cabalFiles
+          pure $ (candidate </>) <$> preferred
+
+extractPackageName :: [Text] -> Maybe Text
+extractPackageName = go
+  where
+    go [] = Nothing
+    go (line:rest) =
+      let stripped = T.strip line
+          lower = T.toLower stripped
+      in if T.isPrefixOf "name" lower
+           then
+             let (prefix, suffix) = T.breakOn ":" stripped
+             in if T.strip (T.toLower prefix) == "name"
+                  then
+                    let rawValue = T.strip $ T.takeWhile (/= '#') (T.drop 1 suffix)
+                        tokens = T.words rawValue
+                    in case tokens of
+                         (pkg:_) ->
+                           let cleaned = T.dropAround (== '"') pkg
+                           in if T.null cleaned then go rest else Just cleaned
+                         _ -> go rest
+                  else go rest
+           else go rest
+
+hasLibraryStanza :: [Text] -> Bool
+hasLibraryStanza = any isLibrary
+  where
+    isLibrary line =
+      let stripped = T.strip line
+      in T.isPrefixOf "library" (T.toLower stripped)

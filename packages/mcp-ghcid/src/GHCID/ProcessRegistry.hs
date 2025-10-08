@@ -21,6 +21,7 @@ module GHCID.ProcessRegistry
     getGHCIDProcess,
     listActiveProcesses,
     getProcessStatus,
+    getProcessLastMessage,
 
     -- * Process Communication
     sendToGHCID,
@@ -37,19 +38,23 @@ module GHCID.ProcessRegistry
   )
 where
 
+import Control.Applicative ((<|>))
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (SomeException, bracket, finally, try)
+import Control.Exception (SomeException, fromException, onException, throwIO, try)
 import Control.Monad (void, when)
 import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.:?), (.=))
 import Data.Function ((&))
 -- STM containers
 
 import Data.Hashable (Hashable (..))
+import Data.Char (isAlpha, isDigit, isSpace)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Text.Read (readMaybe)
 import qualified ListT
 -- Common imports
 import Process.Signals (SignalInfo)
@@ -58,6 +63,7 @@ import qualified StmContainers.Map as StmMap
 import qualified StmContainers.Set as StmSet
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hClose, hFlush)
+import System.IO.Error (isEOFError)
 import System.Process.Typed
 import System.Timeout (timeout)
 import Utils.Logging
@@ -116,7 +122,8 @@ data GHCIDHandle = GHCIDHandle
     ghcidWorkDir :: FilePath,
     ghcidOutputReader :: TVar (Maybe (Async ())),
     ghcidErrorReader :: TVar (Maybe (Async ())),
-    ghcidHealthCheck :: TVar UTCTime -- Last health check
+    ghcidHealthCheck :: TVar UTCTime, -- Last health check
+    ghcidLastMessage :: TVar (Maybe Text)
   }
 
 instance Show GHCIDHandle where
@@ -198,8 +205,8 @@ shutdownProcessRegistry registry@ProcessRegistry {..} = do
   logInfo "Process registry shutdown complete"
 
 -- | Start a new GHCID process for the given cabal URI
-startGHCIDProcess :: ProcessRegistry -> CabalURI -> FilePath -> IO (Either Text GHCIDHandle)
-startGHCIDProcess registry@ProcessRegistry {..} cabalURI workDir = do
+startGHCIDProcess :: ProcessRegistry -> CabalURI -> FilePath -> Maybe Text -> [String] -> IO (Either Text GHCIDHandle)
+startGHCIDProcess registry@ProcessRegistry {..} cabalURI workDir commandOverride extraArgs = do
   isShuttingDown <- readTVarIO registryShutdown
   if isShuttingDown
     then return $ Left "Registry is shutting down"
@@ -218,7 +225,7 @@ startGHCIDProcess registry@ProcessRegistry {..} cabalURI workDir = do
         Nothing -> startNewProcess
   where
     startNewProcess = do
-      result <- try @SomeException $ createGHCIDHandle cabalURI workDir
+      result <- try @SomeException $ createGHCIDHandle cabalURI workDir commandOverride extraArgs
       case result of
         Left ex -> do
           logError $ "Failed to start GHCID process: " <> T.pack (show ex)
@@ -234,13 +241,35 @@ startGHCIDProcess registry@ProcessRegistry {..} cabalURI workDir = do
           return $ Right handle
 
 -- | Create a new GHCID handle with proper resource management
-createGHCIDHandle :: CabalURI -> FilePath -> IO GHCIDHandle
-createGHCIDHandle cabalURI workDir = do
+createGHCIDHandle :: CabalURI -> FilePath -> Maybe Text -> [String] -> IO GHCIDHandle
+createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
   startTime <- getCurrentTime
+
+  let ghcidExecutable = "ghcid"
+      commandValue = maybe "cabal repl" T.unpack commandOverride
+      ghcidArgs = ["--command", commandValue] ++ extraArgs
+      commandDisplay = renderCommand ghcidExecutable ghcidArgs
+      launchMessage =
+        "Launching ghcid for "
+          <> getCabalURI cabalURI
+          <> " in "
+          <> T.pack workDir
+          <> " using: "
+          <> commandDisplay
+          <> " (awaiting first output)"
+
+  logInfo $
+    "Launching ghcid for "
+      <> getCabalURI cabalURI
+      <> " with command: "
+      <> T.pack ghcidExecutable
+      <> " "
+      <> T.unwords (map T.pack ghcidArgs)
+  logInfo launchMessage
 
   -- Configure GHCID process
   let processConfig =
-        proc "ghcid" ["--command", "cabal repl"]
+        proc ghcidExecutable ghcidArgs
           & setWorkingDir workDir
           & setStdin createPipe
           & setStdout createPipe
@@ -250,14 +279,15 @@ createGHCIDHandle cabalURI workDir = do
   process <- startProcess processConfig
 
   -- Create STM variables
-  (status, outputQueue, errorQueue, outputReader, errorReader, healthVar) <- atomically $ do
+  (status, outputQueue, errorQueue, outputReader, errorReader, healthVar, lastMsgVar) <- atomically $ do
     s <- newTVar GHCIDStarting
     oq <- newTBQueue 10000 -- 10k line buffer
     eq <- newTBQueue 1000 -- 1k error buffer
     or <- newTVar Nothing
     er <- newTVar Nothing
     hv <- newTVar startTime
-    return (s, oq, eq, or, er, hv)
+    lm <- newTVar (Just launchMessage)
+    return (s, oq, eq, or, er, hv, lm)
 
   let handle =
         GHCIDHandle
@@ -270,53 +300,86 @@ createGHCIDHandle cabalURI workDir = do
             ghcidWorkDir = workDir,
             ghcidOutputReader = outputReader,
             ghcidErrorReader = errorReader,
-            ghcidHealthCheck = healthVar
+            ghcidHealthCheck = healthVar,
+            ghcidLastMessage = lastMsgVar
           }
 
-  -- Start output readers with proper error handling
-  bracket
-    (return handle)
-    (\h -> cleanupGHCIDHandle h)
-    ( \h -> do
-        outReader <- async $ outputReaderLoop h (getStdout process)
-        errReader <- async $ errorReaderLoop h (getStderr process)
+  let setup = do
+        outReader <- async $ outputReaderLoop handle (getStdout process)
+        errReader <- async $ errorReaderLoop handle (getStderr process)
 
         atomically $ do
-          writeTVar (ghcidOutputReader h) (Just outReader)
-          writeTVar (ghcidErrorReader h) (Just errReader)
-          writeTVar (ghcidStatus h) (GHCIDRunning 0)
+          writeTVar (ghcidOutputReader handle) (Just outReader)
+          writeTVar (ghcidErrorReader handle) (Just errReader)
+          writeTVar (ghcidStatus handle) GHCIDStarting
 
-        return h
-    )
+        return handle
+
+      cleanup = cleanupGHCIDHandle handle
+
+  handle <- setup `onException` cleanup
+
+  exitNow <- getExitCode process
+  case exitNow of
+    Nothing -> return handle
+    Just code -> do
+      (outLines, errLines) <- atomically $ drainQueues handle
+      let decoratedErrs = map ("[stderr] " <>) errLines
+          combinedLines = outLines ++ decoratedErrs
+          combinedLog = T.unlines combinedLines
+          exitMsg = "ghcid exited immediately with " <> T.pack (show code)
+          fullMsg = if T.null combinedLog then exitMsg else exitMsg <> "\n" <> combinedLog
+      atomically $ writeTVar (ghcidStatus handle) (GHCIDError fullMsg)
+      logError $ "ghcid failed to start for " <> getCabalURI cabalURI <> ": " <> fullMsg
+      cleanup
+      throwIO (userError (T.unpack fullMsg))
+  where
+    renderCommand :: String -> [String] -> Text
+    renderCommand exe args = T.unwords (map renderArg (exe : args))
+
+    renderArg :: String -> Text
+    renderArg arg
+      | any isSpace arg = T.pack $ "\"" ++ concatMap escapeChar arg ++ "\""
+      | otherwise = T.pack arg
+
+    escapeChar :: Char -> String
+    escapeChar '"' = "\\\""
+    escapeChar '\\' = "\\\\"
+    escapeChar c = [c]
 
 -- | Output reader loop with error handling
 outputReaderLoop :: GHCIDHandle -> Handle -> IO ()
-outputReaderLoop GHCIDHandle {..} handle = do
-  result <- try @SomeException $ do
-    contents <- T.hGetContents handle
-    let outputLines = T.lines contents
-    atomically $ mapM_ (writeTBQueue ghcidOutput) outputLines
-
-  case result of
-    Left ex -> do
-      logError $ "GHCID output reader error: " <> T.pack (show ex)
-      atomically $ writeTVar ghcidStatus (GHCIDError $ T.pack $ show ex)
-    Right _ ->
-      logInfo $ "GHCID output reader finished for " <> getCabalURI ghcidCabalURI
+outputReaderLoop ghcidHandle@GHCIDHandle {..} handle = go
+  where
+    go = do
+      lineResult <- try @SomeException (T.hGetLine handle)
+      case lineResult of
+        Left ex
+          | Just ioEx <- fromException ex, isEOFError ioEx ->
+              logInfo $ "GHCID stdout closed for " <> getCabalURI ghcidCabalURI
+          | otherwise -> do
+              let errTxt = T.pack (show ex)
+              logError $ "GHCID output reader error: " <> errTxt
+              atomically $ writeTVar ghcidStatus (GHCIDError errTxt)
+        Right line -> do
+          processStdoutLine ghcidHandle line
+          go
 
 -- | Error reader loop
 errorReaderLoop :: GHCIDHandle -> Handle -> IO ()
-errorReaderLoop GHCIDHandle {..} handle = do
-  result <- try @SomeException $ do
-    contents <- T.hGetContents handle
-    let errorLines = T.lines contents
-    atomically $ mapM_ (writeTBQueue ghcidErrors) errorLines
-
-  case result of
-    Left ex ->
-      logError $ "GHCID error reader error: " <> T.pack (show ex)
-    Right _ ->
-      logInfo $ "GHCID error reader finished for " <> getCabalURI ghcidCabalURI
+errorReaderLoop ghcidHandle@GHCIDHandle {..} handle = go
+  where
+    go = do
+      lineResult <- try @SomeException (T.hGetLine handle)
+      case lineResult of
+        Left ex
+          | Just ioEx <- fromException ex, isEOFError ioEx ->
+              logInfo $ "GHCID stderr closed for " <> getCabalURI ghcidCabalURI
+          | otherwise ->
+              logError $ "GHCID error reader error: " <> T.pack (show ex)
+        Right line -> do
+          processStderrLine ghcidHandle line
+          go
 
 -- | Stop a GHCID process with timeout
 stopGHCIDProcess :: ProcessRegistry -> CabalURI -> IO (Either Text ())
@@ -373,7 +436,12 @@ cleanupGHCIDHandle GHCIDHandle {..} = do
     Right _ -> return ()
 
   -- Update status
-  atomically $ writeTVar ghcidStatus GHCIDStopped
+  atomically $ do
+    current <- readTVar ghcidStatus
+    let nextStatus = case current of
+          GHCIDError _ -> current
+          _ -> GHCIDStopped
+    writeTVar ghcidStatus nextStatus
 
 -- | Get a GHCID process handle
 getGHCIDProcess :: ProcessRegistry -> CabalURI -> IO (Maybe GHCIDHandle)
@@ -389,6 +457,131 @@ listActiveProcesses ProcessRegistry {..} =
 getProcessStatus :: GHCIDHandle -> IO GHCIDStatus
 getProcessStatus GHCIDHandle {..} = readTVarIO ghcidStatus
 
+-- | Get the last message observed from stdout/stderr for a process.
+getProcessLastMessage :: GHCIDHandle -> IO (Maybe Text)
+getProcessLastMessage GHCIDHandle {..} = readTVarIO ghcidLastMessage
+
+-- | Consume and process a stdout line from ghcid.
+processStdoutLine :: GHCIDHandle -> Text -> IO ()
+processStdoutLine handle@GHCIDHandle {..} rawLine = do
+  let line = sanitizeLine rawLine
+  atomically $ writeTBQueue ghcidOutput line
+  when (not $ T.null line) $ do
+    logDebug $ "[ghcid stdout] " <> line
+    atomically $ writeTVar ghcidLastMessage (Just line)
+  updateStatusFromStdout handle line
+
+-- | Consume and process a stderr line from ghcid.
+processStderrLine :: GHCIDHandle -> Text -> IO ()
+processStderrLine handle@GHCIDHandle {..} rawLine = do
+  let line = sanitizeLine rawLine
+  atomically $ writeTBQueue ghcidErrors line
+  when (not $ T.null line) $ do
+    logDebug $ "[ghcid stderr] " <> line
+    atomically $ writeTVar ghcidLastMessage (Just ("stderr: " <> line))
+  updateStatusFromStderr handle line
+
+-- | Remove common ANSI / control characters so downstream parsing is stable.
+sanitizeLine :: Text -> Text
+sanitizeLine = T.stripEnd . T.filter (\c -> c == '\t' || c >= ' ')
+
+updateStatusFromStdout :: GHCIDHandle -> Text -> IO ()
+updateStatusFromStdout handle@GHCIDHandle {..} line =
+  when (not $ T.null line) $
+    atomically $ do
+      prev <- readTVar ghcidStatus
+      case interpretStdoutLine prev line of
+        Nothing -> return ()
+        Just newStatus -> writeTVar ghcidStatus newStatus
+
+updateStatusFromStderr :: GHCIDHandle -> Text -> IO ()
+updateStatusFromStderr GHCIDHandle {..} line =
+  when (not $ T.null line) $
+    atomically $ do
+      prev <- readTVar ghcidStatus
+      case interpretStderrLine prev line of
+        Nothing -> return ()
+        Just newStatus -> writeTVar ghcidStatus newStatus
+
+interpretStdoutLine :: GHCIDStatus -> Text -> Maybe GHCIDStatus
+interpretStdoutLine prev line
+  | isAllGood = Just (GHCIDRunning moduleCount')
+  | mentionsModulesLoaded = Just (GHCIDRunning moduleCount')
+  | isCompilingLine = Just GHCIDCompiling
+  | isExitFailure = Just (GHCIDError (T.strip line))
+  | otherwise = Nothing
+  where
+    lower = T.toLower (T.strip line)
+    moduleCount' =
+      case extractModuleCount line <|> previousModuleCount prev of
+        Just count -> count
+        Nothing -> 0
+
+    isAllGood = "all good" `T.isInfixOf` lower
+    mentionsModulesLoaded = "module loaded" `T.isInfixOf` lower || "modules loaded" `T.isInfixOf` lower
+    isCompilingLine =
+      any (`T.isPrefixOf` lower) ["compiling", "reloading", "loading", "ghci> :reload"]
+        || "ghci> :l" `T.isPrefixOf` lower
+    isExitFailure =
+      "exited unexpectedly" `T.isInfixOf` lower
+        || "exit failure" `T.isInfixOf` lower
+        || (containsErrorKeyword lower && not ("warning" `T.isInfixOf` lower))
+
+interpretStderrLine :: GHCIDStatus -> Text -> Maybe GHCIDStatus
+interpretStderrLine _ line
+  | T.null trimmed = Nothing
+  | containsErrorKeyword lower && not ("warning" `T.isInfixOf` lower) = Just (GHCIDError trimmed)
+  | otherwise = Nothing
+  where
+    trimmed = T.strip line
+    lower = T.toLower trimmed
+
+containsErrorKeyword :: Text -> Bool
+containsErrorKeyword lower =
+  or
+    [ "error:" `T.isInfixOf` lower
+    , "fatal" `T.isInfixOf` lower
+    , "exception" `T.isInfixOf` lower
+    , "unknown target" `T.isInfixOf` lower
+    , "failed to" `T.isInfixOf` lower
+    , "panic" `T.isInfixOf` lower
+    ]
+
+extractModuleCount :: Text -> Maybe Int
+extractModuleCount txt =
+  let lower = T.toLower txt
+      (prefix, rest) = T.breakOn "module" lower
+   in if T.null rest
+        then Nothing
+        else
+          let digits = T.takeWhileEnd isDigit prefix
+           in if not (T.null digits)
+                then readMaybe (T.unpack digits)
+                else do
+                  let cleanedWords = map (T.dropAround (\c -> not (isAlpha c))) (T.words prefix)
+                  word <- safeLast (filter (not . T.null) cleanedWords)
+                  lookup word spelledNumbers
+  where
+    spelledNumbers =
+      [ ("one", 1)
+      , ("two", 2)
+      , ("three", 3)
+      , ("four", 4)
+      , ("five", 5)
+      , ("six", 6)
+      , ("seven", 7)
+      , ("eight", 8)
+      , ("nine", 9)
+      , ("ten", 10)
+      ]
+
+    safeLast [] = Nothing
+    safeLast xs = Just (last xs)
+
+previousModuleCount :: GHCIDStatus -> Maybe Int
+previousModuleCount (GHCIDRunning count) = Just count
+previousModuleCount _ = Nothing
+
 -- | Send a message to GHCID (not typically needed, but for completeness)
 sendToGHCID :: GHCIDHandle -> Text -> IO (Either Text ())
 sendToGHCID _ _ = return $ Left "GHCID does not accept input messages"
@@ -401,9 +594,10 @@ readFromGHCID GHCIDHandle {..} = do
 
 -- | Get buffered output as text
 getBufferedOutput :: GHCIDHandle -> IO Text
-getBufferedOutput GHCIDHandle {..} = do
-  lines <- atomically $ flushTBQueueCustom ghcidOutput
-  return $ T.unlines lines
+getBufferedOutput handle = do
+  (outLines, errLines) <- atomically $ drainQueues handle
+  let decoratedErrs = map ("[stderr] " <>) errLines
+  return $ T.unlines (outLines ++ decoratedErrs)
 
 -- | Flush all items from a TBQueue (custom implementation to avoid naming conflict)
 flushTBQueueCustom :: TBQueue a -> STM [a]
@@ -415,6 +609,12 @@ flushTBQueueCustom queue = do
       item <- readTBQueue queue
       rest <- flushTBQueueCustom queue
       return (item : rest)
+
+drainQueues :: GHCIDHandle -> STM ([Text], [Text])
+drainQueues GHCIDHandle {..} = do
+  outs <- flushTBQueueCustom ghcidOutput
+  errs <- flushTBQueueCustom ghcidErrors
+  return (outs, errs)
 
 -- | Health monitoring loop
 healthMonitorLoop :: ProcessRegistry -> IO ()
@@ -430,8 +630,6 @@ healthMonitorLoop registry@ProcessRegistry {..} = do
       -- Wait before next check
       threadDelay 30000000 -- 30 seconds
       healthMonitorLoop registry
-  where
-    threadDelay = threadDelay
 
 -- | Check health of a single process
 checkProcessHealth :: ProcessRegistry -> CabalURI -> IO (Either Text GHCIDStatus)
@@ -479,7 +677,7 @@ restartUnhealthyProcesses registry = do
               case stopResult of
                 Left err -> return [(uri, Left $ "Failed to stop: " <> err)]
                 Right _ -> do
-                  startResult <- startGHCIDProcess reg uri (ghcidWorkDir handle)
+                  startResult <- startGHCIDProcess reg uri (ghcidWorkDir handle) Nothing []
                   return [(uri, startResult)]
             _ -> return []
 

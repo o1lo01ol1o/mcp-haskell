@@ -401,7 +401,7 @@ pollForMessage (hin, hout) cabalUri needle attempts = loop attempts Nothing
         , "id" .= (fromIntegral n :: Int)
         , "method" .= ("tools/call" :: Text)
         , "params" .= object
-            [ "name" .= ("ghcid.messages" :: Text)
+            [ "name" .= ("ghcid-messages" :: Text)
             , "arguments" .= object
                 [ "cabalURI" .= cabalUri
                 , "count" .= (80 :: Int)
@@ -428,7 +428,7 @@ pollForMessage (hin, hout) cabalUri needle attempts = loop attempts Nothing
                     threadDelay 500000
                     loop (n - 1) (Just outputTxt)
 
-pollForStatus :: (Handle, Handle) -> Text -> Int -> IO (Either String (Text, Maybe Int, Maybe Text))
+pollForStatus :: (Handle, Handle) -> Text -> Int -> IO (Either String (Text, Maybe Int, Maybe Text, Maybe Text))
 pollForStatus (hin, hout) cabalUri attempts = loop attempts Nothing
   where
     loop 0 lastSnapshot =
@@ -439,7 +439,7 @@ pollForStatus (hin, hout) cabalUri attempts = loop attempts Nothing
         , "id" .= (fromIntegral n :: Int)
         , "method" .= ("tools/call" :: Text)
         , "params" .= object
-            [ "name" .= ("ghcid.status" :: Text)
+            [ "name" .= ("ghcid-status" :: Text)
             , "arguments" .= object
                 [ "cabalURI" .= cabalUri
                 ]
@@ -458,7 +458,7 @@ pollForStatus (hin, hout) cabalUri attempts = loop attempts Nothing
           Just txt ->
             case decodeStatusPayload txt of
               Left parseErr -> pure $ Left ("Failed to parse status payload: " <> parseErr)
-              Right snapshot@(stateTxt, _, errMsg) ->
+              Right snapshot@(stateTxt, _, errMsg, _) ->
                 case T.toLower stateTxt of
                   "running" -> pure $ Right snapshot
                   "error" -> pure $ Left ("GHCID watch errored: " <> maybe (T.unpack stateTxt) T.unpack errMsg)
@@ -466,28 +466,30 @@ pollForStatus (hin, hout) cabalUri attempts = loop attempts Nothing
                     threadDelay 1000000
                     loop (n - 1) (Just snapshot)
 
-    formatSnapshot (stateTxt, moduleCount, errMsg) =
+    formatSnapshot (stateTxt, moduleCount, errMsg, latestMsg) =
       T.unpack stateTxt
         <> maybe "" (\mc -> " (modules: " <> show mc <> ")") moduleCount
         <> maybe "" (\err -> " (error: " <> T.unpack err <> ")") errMsg
+        <> maybe "" (\msg -> " (latest: " <> T.unpack msg <> ")") latestMsg
 
-decodeStatusPayload :: Text -> Either String (Text, Maybe Int, Maybe Text)
+decodeStatusPayload :: Text -> Either String (Text, Maybe Int, Maybe Text, Maybe Text)
 decodeStatusPayload txt =
   case eitherDecode (L8.pack (T.unpack txt)) of
     Left err -> Left err
     Right val ->
       parseEither
         (withObject "statusPayload" $ \o -> do
+          latestMsg <- o .:? "processLatestMessage"
           statusVal <- o .:? "processStatus"
           case statusVal of
-            Nothing -> pure ("stopped", Nothing, Nothing)
-            Just Null -> pure ("stopped", Nothing, Nothing)
+            Nothing -> pure ("stopped", Nothing, Nothing, latestMsg)
+            Just Null -> pure ("stopped", Nothing, Nothing, latestMsg)
             Just (Object statusObj) -> do
               statusTxt <- statusObj .: "status"
               moduleCount <- statusObj .:? "moduleCount"
               errTxt <- statusObj .:? "error"
-              pure (statusTxt, moduleCount, errTxt)
-            _ -> pure ("unknown", Nothing, Nothing)
+              pure (statusTxt, moduleCount, errTxt, latestMsg)
+            _ -> pure ("unknown", Nothing, Nothing, latestMsg)
         )
         val
 

@@ -15,7 +15,7 @@ module Obelisk.ProcessRegistry
 
 import Control.Concurrent.Async (Async, async, cancel)
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, fromException, try)
 import Control.Monad (void, when)
 import Data.Foldable (toList)
 import Data.Map.Strict (Map)
@@ -30,6 +30,7 @@ import Obelisk.Filter (FilterRequest, applyShellFilter)
 import Obelisk.Types
 import System.Directory (doesDirectoryExist)
 import System.IO (Handle, hClose, hIsEOF)
+import System.IO.Error (isEOFError)
 import System.Process.Typed
 
 -- | Internal representation of a running ob watch process.
@@ -171,13 +172,18 @@ pumpOutput statusVar bufferVar lastMessageVar handle = do
           loop
 
 pumpError :: TVar (Maybe Text) -> Handle -> IO ()
-pumpError lastMessageVar handle = do
-  result <- try @SomeException $ T.hGetContents handle
-  case result of
-    Left _ -> pure ()
-    Right contents ->
-      let linesText = T.lines contents
-      in atomically $ writeTVar lastMessageVar (if null linesText then Nothing else Just (last linesText))
+pumpError lastMessageVar handle = loop
+  where
+    loop = do
+      lineResult <- try @SomeException (T.hGetLine handle)
+      case lineResult of
+        Left ex
+          | Just ioEx <- fromException ex, isEOFError ioEx -> pure ()
+          | otherwise ->
+              atomically $ writeTVar lastMessageVar (Just $ "stderr: " <> T.pack (show ex))
+        Right line -> do
+          atomically $ writeTVar lastMessageVar (Just line)
+          loop
 
 appendLine :: Text -> Seq Text -> Seq Text
 appendLine line seqLines =

@@ -13,6 +13,8 @@ module MCP.Types.GHCID
   ( -- * GHCID Tool Request Types
     GHCIDToolName (..),
     StartGHCIDArgs (..),
+    StartGHCIDOptions (..),
+    CommandSpec (..),
     StopGHCIDArgs (..),
     GetMessagesArgs (..),
     ListProcessesArgs (..),
@@ -36,21 +38,23 @@ module MCP.Types.GHCID
   )
 where
 
-import Control.Monad (when)
+import Control.Applicative ((<|>))
 import Data.Aeson
 -- MCP SDK imports
 
 -- Internal imports
 
 import qualified Data.Aeson.KeyMap as KM
-import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Parser, typeMismatch)
+import Data.Foldable (toList)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
 import qualified Data.Vector as V
 import GHC.Generics (Generic)
 import GHCID.Filter (FilterRequest)
-import GHCID.ProcessRegistry (CabalURI (..), GHCIDHandle, GHCIDStatus (..), ProcessRegistry)
+import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..))
 import MCP.SDK.Types (Content (TextContent), Tool (..), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
 
 -- | GHCID tool names
@@ -69,21 +73,27 @@ instance FromJSON GHCIDToolName
 
 -- | Convert tool name to text
 toolNameToText :: GHCIDToolName -> Text
-toolNameToText StartGHCID = "ghcid.start"
-toolNameToText StopGHCID = "ghcid.stop"
-toolNameToText GetMessages = "ghcid.messages"
-toolNameToText ListProcesses = "ghcid.list"
-toolNameToText ProcessStatus = "ghcid.status"
-toolNameToText RestartProcess = "ghcid.restart"
+toolNameToText StartGHCID = "ghcid-start"
+toolNameToText StopGHCID = "ghcid-stop"
+toolNameToText GetMessages = "ghcid-messages"
+toolNameToText ListProcesses = "ghcid-list"
+toolNameToText ProcessStatus = "ghcid-status"
+toolNameToText RestartProcess = "ghcid-restart"
 
 -- | Convert text to tool name
 textToToolName :: Text -> Maybe GHCIDToolName
-textToToolName "ghcid.start" = Just StartGHCID
+textToToolName "ghcid-start" = Just StartGHCID
 textToToolName "ghcid.stop" = Just StopGHCID
 textToToolName "ghcid.messages" = Just GetMessages
 textToToolName "ghcid.list" = Just ListProcesses
 textToToolName "ghcid.status" = Just ProcessStatus
 textToToolName "ghcid.restart" = Just RestartProcess
+textToToolName "ghcid-stop" = Just StopGHCID
+textToToolName "ghcid-messages" = Just GetMessages
+textToToolName "ghcid-list" = Just ListProcesses
+textToToolName "ghcid-status" = Just ProcessStatus
+textToToolName "ghcid-restart" = Just RestartProcess
+textToToolName "ghcid.start" = Just StartGHCID
 textToToolName _ = Nothing
 
 -- | Tool argument types
@@ -92,8 +102,44 @@ textToToolName _ = Nothing
 data StartGHCIDArgs = StartGHCIDArgs
   { startCabalURI :: CabalURI,
     startWorkDir :: FilePath,
-    startOptions :: Maybe Value -- Additional options
+    startComponent :: Maybe Text,
+    startOptions :: Maybe StartGHCIDOptions
   }
+  deriving (Show, Eq, Generic)
+
+parseCabalURIField :: Object -> Parser CabalURI
+parseCabalURIField o = do
+  camel <- o .:? "cabalURI"
+  snake <- o .:? "cabal_uri"
+  case camel <|> snake of
+    Just txt -> pure (CabalURI txt)
+    Nothing -> fail "Missing cabalURI"
+
+parseWorkDirField :: Object -> Parser FilePath
+parseWorkDirField o = do
+  camel <- o .:? "workDir"
+  snake <- o .:? "work_dir"
+  case camel <|> snake of
+    Just dir -> pure dir
+    Nothing -> fail "Missing workDir"
+
+parseOptionalWorkDirField :: Object -> Parser (Maybe FilePath)
+parseOptionalWorkDirField o = do
+  camel <- o .:? "workDir"
+  snake <- o .:? "work_dir"
+  pure (camel <|> snake)
+
+-- | Additional launch options supplied with a start request.
+data StartGHCIDOptions = StartGHCIDOptions
+  { startCommandSpec :: Maybe CommandSpec,
+    startAdditionalArgs :: [Text]
+  }
+  deriving (Show, Eq, Generic)
+
+-- | Representation of a ghcid --command value.
+data CommandSpec
+  = CommandString Text
+  | CommandList [Text]
   deriving (Show, Eq, Generic)
 
 instance ToJSON StartGHCIDArgs where
@@ -101,15 +147,49 @@ instance ToJSON StartGHCIDArgs where
     object
       [ "cabalURI" .= getCabalURI startCabalURI,
         "workDir" .= startWorkDir,
+        "component" .= startComponent,
         "options" .= startOptions
       ]
 
 instance FromJSON StartGHCIDArgs where
   parseJSON = withObject "StartGHCIDArgs" $ \o ->
     StartGHCIDArgs
-      <$> (CabalURI <$> o .: "cabalURI")
-      <*> o .: "workDir"
+      <$> parseCabalURIField o
+      <*> parseWorkDirField o
+      <*> o .:? "component"
       <*> o .:? "options"
+
+instance ToJSON StartGHCIDOptions where
+  toJSON StartGHCIDOptions {..} =
+    object $
+      maybe [] (\spec -> ["command" .= spec]) startCommandSpec
+        ++ (if null startAdditionalArgs then [] else ["args" .= startAdditionalArgs])
+
+instance FromJSON StartGHCIDOptions where
+  parseJSON = withObject "StartGHCIDOptions" $ \o ->
+    do
+      rawCommand <- o .:? "command"
+      commandSpec <- case rawCommand of
+        Nothing -> pure Nothing
+        Just val -> Just <$> parseCommandValue val
+
+      StartGHCIDOptions
+        <$> pure commandSpec
+        <*> o .:? "args" .!= []
+    where
+      parseCommandValue :: Value -> Parser CommandSpec
+      parseCommandValue (String t) = pure (CommandString t)
+      parseCommandValue (Array arr) = CommandList <$> traverse parseJSON (toList arr)
+      parseCommandValue other = typeMismatch "String or array of strings" other
+
+instance ToJSON CommandSpec where
+  toJSON (CommandString t) = toJSON t
+  toJSON (CommandList parts) = toJSON parts
+
+instance FromJSON CommandSpec where
+  parseJSON (String t) = pure (CommandString t)
+  parseJSON (Array arr) = CommandList <$> traverse parseJSON (toList arr)
+  parseJSON v = typeMismatch "String or array of strings" v
 
 -- | Stop GHCID process arguments
 data StopGHCIDArgs = StopGHCIDArgs
@@ -128,8 +208,8 @@ instance ToJSON StopGHCIDArgs where
 instance FromJSON StopGHCIDArgs where
   parseJSON = withObject "StopGHCIDArgs" $ \o ->
     StopGHCIDArgs
-      <$> (CabalURI <$> o .: "cabalURI")
-      <*> o .: "force"
+      <$> parseCabalURIField o
+      <*> o .:? "force" .!= False
 
 -- | Get messages arguments
 data GetMessagesArgs = GetMessagesArgs
@@ -150,7 +230,7 @@ instance ToJSON GetMessagesArgs where
 instance FromJSON GetMessagesArgs where
   parseJSON = withObject "GetMessagesArgs" $ \o ->
     GetMessagesArgs
-      <$> (CabalURI <$> o .: "cabalURI")
+      <$> parseCabalURIField o
       <*> o .:? "filter"
       <*> o .:? "count"
 
@@ -167,9 +247,11 @@ instance ToJSON ListProcessesArgs where
       ]
 
 instance FromJSON ListProcessesArgs where
-  parseJSON = withObject "ListProcessesArgs" $ \o ->
-    ListProcessesArgs
-      <$> o .: "includeStatus"
+  parseJSON = withObject "ListProcessesArgs" $ \o -> do
+    camel <- o .:? "includeStatus"
+    snake <- o .:? "include_status"
+    let include = fromMaybe False (camel <|> snake)
+    pure (ListProcessesArgs include)
 
 -- | Get process status arguments
 data ProcessStatusArgs = ProcessStatusArgs
@@ -186,12 +268,13 @@ instance ToJSON ProcessStatusArgs where
 instance FromJSON ProcessStatusArgs where
   parseJSON = withObject "ProcessStatusArgs" $ \o ->
     ProcessStatusArgs
-      <$> (CabalURI <$> o .: "cabalURI")
+      <$> parseCabalURIField o
 
 -- | Restart process arguments
 data RestartProcessArgs = RestartProcessArgs
   { restartCabalURI :: CabalURI,
-    restartWorkDir :: Maybe FilePath -- New working directory
+    restartWorkDir :: Maybe FilePath,
+    restartComponent :: Maybe Text
   }
   deriving (Show, Eq, Generic)
 
@@ -199,14 +282,16 @@ instance ToJSON RestartProcessArgs where
   toJSON RestartProcessArgs {..} =
     object
       [ "cabalURI" .= getCabalURI restartCabalURI,
-        "workDir" .= restartWorkDir
+        "workDir" .= restartWorkDir,
+        "component" .= restartComponent
       ]
 
 instance FromJSON RestartProcessArgs where
   parseJSON = withObject "RestartProcessArgs" $ \o ->
     RestartProcessArgs
-      <$> (CabalURI <$> o .: "cabalURI")
-      <*> o .:? "workDir"
+      <$> parseCabalURIField o
+      <*> parseOptionalWorkDirField o
+      <*> o .:? "component"
 
 -- | Tool result types
 
@@ -268,7 +353,8 @@ instance FromJSON ProcessListResult where
 -- | Process status result
 data ProcessStatusResult = ProcessStatusResult
   { processStatus :: Maybe GHCIDStatus,
-    processUptime :: Maybe Text
+    processUptime :: Maybe Text,
+    processLatestMessage :: Maybe Text
   }
   deriving (Show, Eq, Generic)
 
@@ -293,7 +379,7 @@ instance FromJSON RestartProcessResult
 ghcidTools :: [Tool]
 ghcidTools =
   [ Tool
-      { toolNameField = "ghcid.start",
+      { toolNameField = "ghcid-start",
         toolDescription = Just "Start a new ghcid process for monitoring a Haskell project",
         toolInputSchema =
           KM.fromList
@@ -315,10 +401,37 @@ ghcidTools =
                               ("description", toJSON ("Working directory for the project" :: Text))
                             ]
                       ),
+                      ( "component",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Optional Cabal component to load (e.g. lib:mypkg, exe:tool)" :: Text))
+                            ]
+                      ),
                       ( "options",
                         toJSON $
                           KM.fromList
                             [ ("type", toJSON ("object" :: Text)),
+                              ( "properties",
+                                toJSON $
+                                  KM.fromList
+                                    [ ( "command",
+                                        toJSON $
+                                          KM.fromList
+                                            [ ("type", toJSON ("string" :: Text)),
+                                              ("description", toJSON ("Command passed to ghcid's --command flag; arrays are also accepted" :: Text))
+                                            ]
+                                      ),
+                                      ( "args",
+                                        toJSON $
+                                          KM.fromList
+                                            [ ("type", toJSON ("array" :: Text)),
+                                              ("items", toJSON $ KM.fromList [("type", toJSON ("string" :: Text))]),
+                                              ("description", toJSON ("Additional arguments appended to the ghcid invocation" :: Text))
+                                            ]
+                                      )
+                                    ]
+                              ),
                               ("description", toJSON ("Additional GHCID configuration options" :: Text))
                             ]
                       )
@@ -328,7 +441,7 @@ ghcidTools =
             ]
       },
     Tool
-      { toolNameField = "ghcid.stop",
+      { toolNameField = "ghcid-stop",
         toolDescription = Just "Stop a running ghcid process",
         toolInputSchema =
           KM.fromList
@@ -357,7 +470,7 @@ ghcidTools =
             ]
       },
     Tool
-      { toolNameField = "ghcid.messages",
+      { toolNameField = "ghcid-messages",
         toolDescription = Just "Get compiler messages from a running ghcid process",
         toolInputSchema =
           KM.fromList
@@ -393,7 +506,7 @@ ghcidTools =
             ]
       },
     Tool
-      { toolNameField = "ghcid.list",
+      { toolNameField = "ghcid-list",
         toolDescription = Just "List all active ghcid processes",
         toolInputSchema =
           KM.fromList
@@ -414,7 +527,7 @@ ghcidTools =
             ]
       },
     Tool
-      { toolNameField = "ghcid.status",
+      { toolNameField = "ghcid-status",
         toolDescription = Just "Get status of a specific ghcid process",
         toolInputSchema =
           KM.fromList
@@ -435,7 +548,7 @@ ghcidTools =
             ]
       },
     Tool
-      { toolNameField = "ghcid.restart",
+      { toolNameField = "ghcid-restart",
         toolDescription = Just "Restart a ghcid process",
         toolInputSchema =
           KM.fromList
@@ -450,11 +563,18 @@ ghcidTools =
                               ("description", toJSON ("Cabal project URI identifier" :: Text))
                             ]
                       ),
-                      ( "newWorkDir",
+                      ( "workDir",
                         toJSON $
                           KM.fromList
                             [ ("type", toJSON ("string" :: Text)),
-                              ("description", toJSON ("New working directory (optional)" :: Text))
+                              ("description", toJSON ("Working directory for the project (optional)" :: Text))
+                            ]
+                      ),
+                      ( "component",
+                        toJSON $
+                          KM.fromList
+                            [ ("type", toJSON ("string" :: Text)),
+                              ("description", toJSON ("Optional Cabal component to load on restart" :: Text))
                             ]
                       )
                     ]
