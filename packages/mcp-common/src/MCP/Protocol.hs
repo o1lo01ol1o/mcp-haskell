@@ -1,7 +1,27 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DisambiguateRecordFields #-}
 
-module MCP.Protocol where
+module MCP.Protocol
+  ( parseError
+  , invalidRequest
+  , methodNotFound
+  , invalidParams
+  , internalError
+  , createResponse
+  , createErrorResponse
+  , validateRequest
+  , extractParams
+  , createSuccessResponse
+  , sendMessage
+  , readMessage
+  , readLineWithEOF
+  , handleInitialize
+  , listTools
+  , listResources
+  , reqId
+  , processRequest
+  , handleToolCall
+  ) where
 
 import Control.Exception (try)
 import Data.Aeson
@@ -24,18 +44,20 @@ internalError = -32603
 
 -- Create JSON-RPC Response
 createResponse :: Maybe Value -> Maybe JsonRpcError -> Maybe Value -> JsonRpcResponse
-createResponse result err reqId = JsonRpcResponse "2.0" result err reqId
+createResponse resultValue errorValue requestId =
+  JsonRpcResponse "2.0" resultValue errorValue requestId
 
 -- Create JSON-RPC Error Response
 createErrorResponse :: Int -> Text -> Maybe Value -> Maybe Value -> JsonRpcResponse
-createErrorResponse code msg errData reqId = createResponse Nothing (Just jsonRpcErr) reqId
+createErrorResponse errorCode messageValue errData requestId =
+  createResponse Nothing (Just jsonRpcErr) requestId
   where
-    jsonRpcErr = JsonRpcError code msg errData
+    jsonRpcErr = JsonRpcError errorCode messageValue errData
 
 -- Validate JSON-RPC Request
 validateRequest :: JsonRpcRequest -> Either JsonRpcError ()
-validateRequest (JsonRpcRequest version methodName _ _)
-  | version /= "2.0" = Left $ JsonRpcError invalidRequest "Invalid JSON-RPC version" Nothing
+validateRequest (JsonRpcRequest rpcVersion methodName _ _)
+  | rpcVersion /= "2.0" = Left $ JsonRpcError invalidRequest "Invalid JSON-RPC version" Nothing
   | T.null methodName = Left $ JsonRpcError invalidRequest "Missing method" Nothing
   | otherwise = Right ()
 
@@ -49,7 +71,8 @@ extractParams req = case params req of
 
 -- Create Success Response
 createSuccessResponse :: ToJSON a => a -> Maybe Value -> JsonRpcResponse
-createSuccessResponse result reqId = createResponse (Just $ toJSON result) Nothing reqId
+createSuccessResponse payload requestId =
+  createResponse (Just $ toJSON payload) Nothing requestId
 
 -- Send JSON-RPC Message
 sendMessage :: ToJSON a => a -> IO ()
@@ -61,8 +84,8 @@ sendMessage msg = do
 -- Read JSON-RPC Message from stdin with EOF handling (line-delimited)
 readMessage :: IO (Either String (Maybe JsonRpcRequest))
 readMessage = do
-  result <- try readLineWithEOF
-  case result of
+  lineResult <- try readLineWithEOF
+  case lineResult of
     Left ex | isEOFError ex -> return $ Right Nothing
     Left ex -> return $ Left $ "IO error reading from stdin: " ++ show ex
     Right Nothing -> return $ Right Nothing
@@ -94,12 +117,12 @@ readLineWithEOF = do
 
 -- Handle Initialize Request
 handleInitialize :: InitializeRequest -> Maybe Value -> JsonRpcResponse
-handleInitialize _initReq reqId = createSuccessResponse initResponse reqId
+handleInitialize _initReq requestId = createSuccessResponse initResponse requestId
   where
     initResponse = object
       [ "protocolVersion" .= mcpVersion
       , "capabilities" .= serverCapabilities
-      , "serverInfo" .= serverInfo
+      , "serverInfo" .= serverInfoValue
       ]
 
     serverCapabilities =
@@ -110,7 +133,7 @@ handleInitialize _initReq reqId = createSuccessResponse initResponse reqId
         , tools = Just (ToolsCapability (Just True))
         }
 
-    serverInfo = object
+    serverInfoValue = object
       [ "name" .= ("mcp-hls" :: Text)
       , "version" .= ("0.1.0.0" :: Text)
       ]
@@ -191,22 +214,6 @@ listTools = createSuccessResponse toolsResponse Nothing
       , "properties" .= object []
       ]
 
-    formatSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "filePath" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Path to the Haskell file to format" :: Text)
-              ]
-          , "formatter" .= object
-              [ "type" .= ("string" :: Text)
-              , "enum" .= ["ormolu", "fourmolu", "brittany", "stylish-haskell" :: Text]
-              , "description" .= ("Formatter to use" :: Text)
-              ]
-          ]
-      , "required" .= ["filePath" :: Text]
-      ]
-
     diagnosticsSchema = object
       [ "type" .= ("object" :: Text)
       , "properties" .= object
@@ -216,87 +223,6 @@ listTools = createSuccessResponse toolsResponse Nothing
               ]
           ]
       , "required" .= ["filePath" :: Text]
-      ]
-
-    syntaxSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "filePath" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Path to the Haskell file to check" :: Text)
-              ]
-          ]
-      , "required" .= ["filePath" :: Text]
-      ]
-
-    hlintSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "filePath" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Path to the Haskell file for HLint analysis" :: Text)
-              ]
-          ]
-      , "required" .= ["filePath" :: Text]
-      ]
-
-    docSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "moduleName" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the module to show documentation for" :: Text)
-              ]
-          ]
-      , "required" .= ["moduleName" :: Text]
-      ]
-
-    searchSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "query" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Search query for Haddock documentation" :: Text)
-              ]
-          ]
-      , "required" .= ["query" :: Text]
-      ]
-
-    genDocsSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "projectPath" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Path to the project root directory" :: Text)
-              ]
-          ]
-      , "required" .= ["projectPath" :: Text]
-      ]
-
-    browseSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "moduleName" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Name of the module to browse" :: Text)
-              ]
-          ]
-      , "required" .= ["moduleName" :: Text]
-      ]
-
-    symbolSchema = object
-      [ "type" .= ("object" :: Text)
-      , "properties" .= object
-          [ "symbol" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Symbol name to get information for" :: Text)
-              ]
-          , "moduleName" .= object
-              [ "type" .= ("string" :: Text)
-              , "description" .= ("Optional module name to search in" :: Text)
-              ]
-          ]
-      , "required" .= ["symbol" :: Text]
       ]
 
     -- LSP Basic Operation Schemas
@@ -718,7 +644,7 @@ processRequest req = do
       logError $ "Request validation failed: " <> message err
       return $ createErrorResponse (code err) (message err) (errorData err) (reqId req)
     Right _ -> do
-      result <- case method req of
+      response <- case method req of
         "initialize" -> do
           logInfo "Processing initialize request"
           case extractParams req of
@@ -742,9 +668,9 @@ processRequest req = do
           case extractParams req of
             Right toolCall@(ToolCall toolName _) -> do
               logInfo $ "Calling tool: " <> toolName
-              result <- handleToolCall toolCall
+              toolResult <- handleToolCall toolCall
               logInfo $ "Tool call completed successfully: " <> toolName
-              return $ createSuccessResponse result (reqId req)
+              return $ createSuccessResponse toolResult (reqId req)
             Left err -> do
               logError $ "Tool call parameter extraction failed: " <> message err
               return $ createErrorResponse (code err) (message err) (errorData err) (reqId req)
@@ -754,13 +680,13 @@ processRequest req = do
           case extractParams req of
             Right obj -> case obj of
               Object o -> case KM.lookup "uri" o of
-                Just (String uri) -> do
-                  logInfo $ "Reading resource: " <> uri
+                Just (String uriValue) -> do
+                  logInfo $ "Reading resource: " <> uriValue
                   -- Return placeholder in shared implementation
-                  let contents = "Resource not available in shared implementation: " <> uri
-                  do
-                      logInfo $ "Resource read successfully: " <> uri
-                      return $ createSuccessResponse contents (reqId req)
+                  let placeholderMessage =
+                        "Resource not available in shared implementation: " <> uriValue
+                  logInfo $ "Resource read successfully: " <> uriValue
+                  return $ createSuccessResponse placeholderMessage (reqId req)
                 _ -> do
                   logError "Missing or invalid URI parameter in resource read"
                   return $ createErrorResponse invalidParams "Missing or invalid URI parameter" Nothing (reqId req)
@@ -776,11 +702,11 @@ processRequest req = do
           return $ createErrorResponse methodNotFound ("Unknown method: " <> method req) Nothing (reqId req)
 
       logDebug $ "Request processed, returning response"
-      return result
+      return response
 
 -- Handle Tool Calls
 handleToolCall :: ToolCall -> IO ToolResult
-handleToolCall (ToolCall toolName toolArgs) = do
+handleToolCall (ToolCall toolName _) = do
   logDebug $ "Handling tool call: " <> toolName
   case toolName of
     -- HLS Management Tools

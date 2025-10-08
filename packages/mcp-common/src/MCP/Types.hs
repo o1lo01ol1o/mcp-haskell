@@ -10,20 +10,41 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module MCP.Types where
+module MCP.Types
+  ( mcpVersion
+  , JsonRpcRequest (..)
+  , JsonRpcResponse (..)
+  , JsonRpcError (..)
+  , InitializeResult (..)
+  , ListToolsResult (..)
+  , ListResourcesResult (..)
+  , ServerCapabilities (..)
+  , LoggingCapability (..)
+  , PromptsCapability (..)
+  , ResourcesCapability (..)
+  , ToolsCapability (..)
+  , InitializeRequest (..)
+  , ClientCapabilities (..)
+  , RootsCapability (..)
+  , SamplingCapability (..)
+  , ClientInfo (..)
+  , Tool (..)
+  , ToolCall (..)
+  , ToolResult (..)
+  , ToolContent (..)
+  , Resource (..)
+  , ResourceContents (..)
+  , ResourceContent (..)
+  , HLSStatus (..)
+  , ProjectInfo (..)
+  , McpRequest (..)
+  ) where
 
 import Data.Aeson
-import Data.Dependent.Map (DMap)
-import qualified Data.Dependent.Map as DMap
-import Data.Dependent.Sum (DSum (..))
-import Data.GADT.Compare (GCompare (..), GEq (..), GOrdering (..))
 import Data.GADT.Compare.TH (deriveGCompare, deriveGEq)
-import Data.GADT.Show (GShow (..))
 import Data.GADT.Show.TH (deriveGShow)
 import Data.Kind (Type)
-import Data.Some (Some (..))
 import Data.Text (Text)
-import Data.Type.Equality ((:~:) (..))
 import GHC.Generics (Generic)
 
 -- MCP Protocol Version (2025 specification)

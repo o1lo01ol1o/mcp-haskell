@@ -2,14 +2,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeApplications #-}
 
-module Utils.FileSystem where
+module Utils.FileSystem
+  ( ProjectInfo (..)
+  , findHaskellFiles
+  , findCabalFiles
+  , findStackFiles
+  , getProjectInfo
+  ) where
 
-import Control.Exception (try, SomeException)
-import Data.Text (Text)
-import qualified Data.Text as T
+import Control.Exception (SomeException, try)
+import GHC.Generics (Generic)
 import System.Directory
 import System.FilePath
-import GHC.Generics (Generic)
 
 -- | Information about a Haskell project
 data ProjectInfo = ProjectInfo
@@ -52,14 +56,15 @@ findStackFiles dir = do
 
 -- Get Project Information
 getProjectInfo :: FilePath -> IO ProjectInfo
-getProjectInfo projectRoot = do
-  haskellFiles <- findHaskellFiles projectRoot
-  cabalFiles <- findCabalFiles projectRoot
-  stackFiles <- findStackFiles projectRoot
-  
-  return ProjectInfo
-    { projectRoot = projectRoot
-    , cabalFiles = cabalFiles
-    , stackFiles = stackFiles
-    , haskellFiles = haskellFiles
-    }
+getProjectInfo rootDir = do
+  foundHaskellFiles <- findHaskellFiles rootDir
+  foundCabalFiles <- findCabalFiles rootDir
+  foundStackFiles <- findStackFiles rootDir
+
+  return
+    ProjectInfo
+      { projectRoot = rootDir
+      , cabalFiles = foundCabalFiles
+      , stackFiles = foundStackFiles
+      , haskellFiles = foundHaskellFiles
+      }

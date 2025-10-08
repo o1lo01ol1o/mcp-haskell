@@ -25,24 +25,22 @@ module Process.Manager
   , killProcess
   
     -- * Utilities
+  , withProcess
+  , findExecutable
   , getProcessVersion
   ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar
 import Control.Concurrent.STM (TVar, readTVarIO, newTVarIO, writeTVar, atomically)
-import Control.Exception (SomeException, try, bracket)
+import Control.Exception (SomeException, try)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import qualified Data.Text.IO as T
 import qualified Data.ByteString.Lazy as LBS
 import qualified System.Directory as Dir
-import System.Exit (ExitCode(..))
-import System.IO (Handle, hClose)
-import System.IO.Unsafe (unsafePerformIO)
-import System.Process.Typed hiding (startProcess, stopProcess)
-import qualified System.Process.Typed as PT
+import System.Exit (ExitCode (..))
+import System.Process.Typed (byteStringOutput, proc, readProcess, setStdout)
 import System.Timeout (timeout)
 import Process.Signals (SignalInfo)
 import Utils.Logging
