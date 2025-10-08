@@ -2,7 +2,19 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Obelisk.Types where
+module Obelisk.Types
+  ( ProjectId (..)
+  , ObeliskStatus (..)
+  , StartResult (..)
+  , StopResult (..)
+  , StatusResult (..)
+  , MessagesResult (..)
+  , ListResult (..)
+  , StartArgs (..)
+  , StopArgs (..)
+  , StatusArgs (..)
+  , MessagesArgs (..)
+  ) where
 
 import Data.Aeson
 import Data.Text (Text)
@@ -60,15 +72,15 @@ data StatusResult = StatusResult
 
 instance ToJSON StatusResult where
   toJSON StatusResult {..} =
-    object
-      [ "status" .= case statusState of
-          ObStarting -> ("starting" :: Text)
-          ObRunning -> "running"
-          ObStopped -> "stopped"
-          ObErrored err -> "errored"
-      , "error" .= case statusState of
-          ObErrored err -> Just err
-          _ -> Nothing
+    let (statusText, statusError) =
+          case statusState of
+            ObStarting -> ("starting", Nothing)
+            ObRunning -> ("running", Nothing)
+            ObStopped -> ("stopped", Nothing)
+            ObErrored err -> ("errored", Just err)
+    in object
+      [ "status" .= (statusText :: Text)
+      , "error" .= statusError
       , "lastMessage" .= statusLastMessage
       ]
 

@@ -38,7 +38,7 @@ import qualified Data.Text as T
 import Data.Time (UTCTime, getCurrentTime)
 import System.FilePath ((</>))
 import System.Process.Typed
-import System.Directory (findExecutable)
+import qualified System.Directory as Dir
 import System.IO (Handle)
 import Data.Function ((&))
 
@@ -241,12 +241,12 @@ getHLSStatus HLSProcess{..} = readTVarIO hlsStatus
 -- | Detect HLS executable
 detectHLSExecutable :: String -> IO (Maybe FilePath)
 detectHLSExecutable command = do
-  result <- findExecutable command
+  result <- Dir.findExecutable command
   case result of
     Nothing -> do
       -- Try common locations
       let alternatives = ["haskell-language-server-wrapper", "hls"]
-      results <- mapM findExecutable alternatives
+      results <- mapM Dir.findExecutable alternatives
       return $ head $ filter (\x -> x /= Nothing) results
     Just path -> return $ Just path
 

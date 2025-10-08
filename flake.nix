@@ -49,6 +49,15 @@
             };
           };
 
+          mcp-obelisk = self.lib.mkMcpObelisk {
+            inherit system;
+            shell = {
+              uri = ".";
+              attr = "runtime";
+              extraArgs = [ "--accept-flake-config" ];
+            };
+          };
+
           # Make it the default package
           default = self.packages.${system}.mcp-ghcid;
         }
@@ -69,10 +78,19 @@
               config.allowUnfree = true;
             };
 
+            cleanMcpSource = path:
+              pkgs.lib.cleanSourceWith {
+                src = path;
+                filter = dir: type:
+                  let name = pkgs.lib.baseNameOf dir;
+                  in !(name == "dist-newstyle" || name == ".git" || name == ".direnv" || name == "result");
+              };
+
             mcpOverlay = self: super: {
-              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
-              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
-              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
+              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (cleanMcpSource ./mcp-sdk-hs) { };
+              mcp-common = self.callCabal2nix "mcp-common" (cleanMcpSource ./packages/mcp-common) { };
+              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (cleanMcpSource ./packages/mcp-ghcid) { };
+              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (cleanMcpSource ./packages/mcp-obelisk) { };
             };
 
             haskellPkgs = pkgs.haskell.packages.ghc948.override {
@@ -108,6 +126,75 @@
 
           in
           pkgs.writeShellScriptBin "mcp-ghcid" launchScript;
+
+        mkMcpObelisk =
+          { system
+          , shell ? null
+          , obeliskCommand ? null
+          , extraRuntimePackages ? [ ]
+          }:
+          let
+            pkgs = import nixpkgs {
+              inherit system;
+              config.allowUnfree = true;
+            };
+
+            cleanMcpSource = path:
+              pkgs.lib.cleanSourceWith {
+                src = path;
+                filter = dir: type:
+                  let name = pkgs.lib.baseNameOf dir;
+                  in !(name == "dist-newstyle" || name == ".git" || name == ".direnv" || name == "result");
+              };
+
+            mcpOverlay = self: super: {
+              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (cleanMcpSource ./mcp-sdk-hs) { };
+              mcp-common = self.callCabal2nix "mcp-common" (cleanMcpSource ./packages/mcp-common) { };
+              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (cleanMcpSource ./packages/mcp-ghcid) { };
+              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (cleanMcpSource ./packages/mcp-obelisk) { };
+            };
+
+            haskellPkgs = pkgs.haskell.packages.ghc948.override {
+              overrides = mcpOverlay;
+            };
+
+            haskellPkg = haskellPkgs.mcp-obelisk;
+
+            staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
+
+            obPkg = if obeliskCommand != null then obeliskCommand else
+              if pkgs ? "obelisk-command" then pkgs."obelisk-command"
+              else if pkgs ? obelisk then pkgs.obelisk
+              else throw "mkMcpObelisk: unable to locate obelisk-command in nixpkgs";
+
+            runtimeBins = [ pkgs.nix pkgs.git obPkg ] ++ extraRuntimePackages;
+
+            realBinary = pkgs.writeShellScriptBin "mcp-obelisk-real" ''
+              export OBELISK_SKIP_UPDATE_CHECK=1
+              export PATH=${pkgs.lib.makeBinPath runtimeBins}:$PATH
+              exec ${staticPkg}/bin/mcp-obelisk "$@"
+            '';
+
+            shellTarget = if shell == null then null else (
+              let
+                uri = if shell ? uri then toString shell.uri else throw "mkMcpObelisk: shell.uri required when shell is set";
+                attrSuffix = if shell ? attr then "#${shell.attr}" else "";
+              in "${uri}${attrSuffix}"
+            );
+
+            nixExtraArgs = if shell == null then [] else pkgs.lib.optionals (shell ? extraArgs) shell.extraArgs;
+
+            escapedExtraArgs = if shell == null then "" else pkgs.lib.concatStringsSep " " (map pkgs.lib.escapeShellArg nixExtraArgs);
+            extraArgsSegment = if shell == null || nixExtraArgs == [] then "" else "${escapedExtraArgs} ";
+
+            launchScript = if shellTarget == null then ''
+              exec ${realBinary}/bin/mcp-obelisk-real "$@"
+            '' else ''
+              exec ${pkgs.nix}/bin/nix ${extraArgsSegment}develop ${pkgs.lib.escapeShellArg shellTarget} --command ${realBinary}/bin/mcp-obelisk-real "$@"
+            '';
+
+          in
+          pkgs.writeShellScriptBin "mcp-obelisk" launchScript;
       };
 
       devShells = forEachSystem (
@@ -215,12 +302,19 @@
           };
 
           runtime = pkgs.mkShell {
-            packages = [
-              pkgs.ghcid
-              pkgs.cabal-install
-              pkgs.nix
-              pkgs.haskell.packages.ghc948.ghc
-            ];
+            packages =
+              let
+                obeliskPkg =
+                  if pkgs ? "obelisk-command" then pkgs."obelisk-command"
+                  else if pkgs ? obelisk then pkgs.obelisk
+                  else throw "runtime shell: obelisk-command not found";
+              in [
+                pkgs.ghcid
+                pkgs.cabal-install
+                pkgs.nix
+                pkgs.haskell.packages.ghc948.ghc
+                obeliskPkg
+              ];
           };
         }
       );

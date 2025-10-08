@@ -25,7 +25,7 @@ import qualified Data.Sequence as Seq
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (UTCTime, getCurrentTime)
+import Data.Time (getCurrentTime)
 import Obelisk.Filter (FilterRequest, applyShellFilter)
 import Obelisk.Types
 import System.Directory (doesDirectoryExist)

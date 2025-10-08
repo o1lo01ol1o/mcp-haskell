@@ -5,9 +5,8 @@ module MCP.Tools.Obelisk
   ( executeObeliskTool
   ) where
 
-import Data.Aeson (FromJSON (..), Result (..), ToJSON (..), Value (..), encode, fromJSON)
+import Data.Aeson (Result (..), ToJSON (..), Value (..), encode, fromJSON)
 import qualified Data.ByteString.Lazy.Char8 as L8
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Obelisk.ProcessRegistry

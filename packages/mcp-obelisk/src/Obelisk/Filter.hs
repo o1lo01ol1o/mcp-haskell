@@ -13,23 +13,21 @@ module Obelisk.Filter
   ) where
 
 import Control.Exception (SomeException, try)
-import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.:?), (.=))
+import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:?), (.=))
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
-import System.Exit (ExitCode (..))
 import System.Process.Typed
 import System.Timeout (timeout)
-import Text.Regex.TDFA ((=~))
 
 -- | Filter request mirroring the ghcid tooling so clients can reuse prompts.
 data FilterRequest
-  = GrepRequest { grepPattern :: Text }
-  | HeadRequest { headLines :: Int }
-  | TailRequest { tailLines :: Int }
-  | LinesRequest { startLine :: Int, endLine :: Int }
+  = GrepRequest Text
+  | HeadRequest Int
+  | TailRequest Int
+  | LinesRequest Int Int
   | NoFilterRequest
   deriving (Show, Eq)
 
