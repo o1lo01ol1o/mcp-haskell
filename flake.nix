@@ -78,19 +78,11 @@
               config.allowUnfree = true;
             };
 
-            cleanMcpSource = path:
-              pkgs.lib.cleanSourceWith {
-                src = path;
-                filter = dir: type:
-                  let name = pkgs.lib.baseNameOf dir;
-                  in !(name == "dist-newstyle" || name == ".git" || name == ".direnv" || name == "result");
-              };
-
             mcpOverlay = self: super: {
-              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (cleanMcpSource ./mcp-sdk-hs) { };
-              mcp-common = self.callCabal2nix "mcp-common" (cleanMcpSource ./packages/mcp-common) { };
-              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (cleanMcpSource ./packages/mcp-ghcid) { };
-              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (cleanMcpSource ./packages/mcp-obelisk) { };
+              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
+              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
+              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
+              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (./packages/mcp-obelisk) { };
             };
 
             haskellPkgs = pkgs.haskell.packages.ghc948.override {
@@ -139,19 +131,11 @@
               config.allowUnfree = true;
             };
 
-            cleanMcpSource = path:
-              pkgs.lib.cleanSourceWith {
-                src = path;
-                filter = dir: type:
-                  let name = pkgs.lib.baseNameOf dir;
-                  in !(name == "dist-newstyle" || name == ".git" || name == ".direnv" || name == "result");
-              };
-
             mcpOverlay = self: super: {
-              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (cleanMcpSource ./mcp-sdk-hs) { };
-              mcp-common = self.callCabal2nix "mcp-common" (cleanMcpSource ./packages/mcp-common) { };
-              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (cleanMcpSource ./packages/mcp-ghcid) { };
-              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (cleanMcpSource ./packages/mcp-obelisk) { };
+              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
+              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
+              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
+              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (./packages/mcp-obelisk) { };
             };
 
             haskellPkgs = pkgs.haskell.packages.ghc948.override {
