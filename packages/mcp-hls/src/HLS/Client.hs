@@ -33,9 +33,9 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception (SomeException, throwIO, try)
-import Control.Monad (forever, replicateM, void)
-import Data.Aeson
-import Data.Aeson (withObject, (.:), (.:?))
+import Control.Monad (forever, replicateM)
+import Data.Aeson (FromJSON (parseJSON), Result (..), Value (..), eitherDecode, encode, fromJSON, object, (.=), withObject, (.:), (.:?))
+import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
 import Data.ByteString (toStrict)
 import Data.ByteString.Lazy (fromStrict)
@@ -49,9 +49,6 @@ import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
 import Process.Signals (SignalInfo (..), setupSignalHandlers)
 -- import Language.LSP.Protocol.Types (LspId, ResponseError(..))
-
-import MCP.Types
-import System.Exit (ExitCode (..))
 import System.IO
 import System.Process.Typed
 import System.Timeout (timeout)
@@ -196,7 +193,7 @@ sendInitializeRequest client workDir = do
 
 -- Send LSP Request
 sendRequest :: LSPClient -> Text -> Value -> IO (Either Text Value)
-sendRequest client@LSPClient {..} method params = do
+sendRequest LSPClient {..} method params = do
   -- Check process health first
   status <- readTVarIO processStatus
   case status of
@@ -210,7 +207,7 @@ sendRequest client@LSPClient {..} method params = do
         writeTVar requestId (current + 1)
         return current
 
-      let reqId = fromIntegral reqIdNum
+      let reqId = reqIdNum
 
       -- Create response variable
       responseVar <- newEmptyTMVarIO
@@ -279,6 +276,7 @@ responseHandler client@LSPClient {..} handle = do
     case status of
       Dead _ -> throwIO (userError "Process died")
       Unhealthy _ -> throwIO (userError "Process unhealthy")
+      Terminated _ -> throwIO (userError "Process terminated by signal")
       Healthy -> do
         -- Read message with timeout
         messageResult <- timeout 5000000 $ do
@@ -295,13 +293,14 @@ responseHandler client@LSPClient {..} handle = do
             return ()
           Just messageText -> do
             case eitherDecode (fromStrict $ T.encodeUtf8 messageText) of
-              Left parseErr -> return () -- Silently ignore parse errors
+              Left _ -> return () -- Silently ignore parse errors
               Right response -> handleResponse client response
 
   case result of
     Left ex -> do
       -- Silently handle background reader errors
       atomically $ writeTVar processStatus (Unhealthy $ T.pack $ show ex)
+    Right _ -> pure ()
 
 -- Handle Response
 handleResponse :: LSPClient -> Value -> IO ()
@@ -327,7 +326,7 @@ handleResponse LSPClient {..} response = do
                 Just errorVal ->
                   case fromJSON errorVal of
                     Success err -> atomically $ putTMVar responseVar (Left err)
-                    Data.Aeson.Error _ -> atomically $ putTMVar responseVar (Left $ ResponseError (-1) "Parse error" Nothing)
+                    Aeson.Error _ -> atomically $ putTMVar responseVar (Left $ ResponseError (-1) "Parse error" Nothing)
                 Nothing ->
                   case KM.lookup "result" obj of
                     Just result -> atomically $ putTMVar responseVar (Right result)
@@ -391,6 +390,7 @@ processWatchdog client@LSPClient {..} = do
       (Right _, Nothing) -> return () -- Continue monitoring
   case result of
     Left ex -> logError $ "Watchdog error: " <> T.pack (show ex)
+    Right _ -> pure ()
 
 -- Handle Signal Termination
 handleSignalTermination :: LSPClient -> SignalInfo -> IO ()
@@ -554,13 +554,6 @@ getHover client uri line char = do
             _ -> return $ Left "No hover content"
         _ -> return $ Left "No hover content"
     Right _ -> return $ Left "Invalid hover response"
-
--- Get Diagnostics
-getDiagnostics :: LSPClient -> Text -> IO (Either Text [Value])
-getDiagnostics client uri = do
-  -- Diagnostics are typically sent as notifications, not responses
-  -- For now, return empty diagnostics
-  return $ Right []
 
 -- Go to Definition
 gotoDefinition :: LSPClient -> Text -> Int -> Int -> IO (Either Text [Value])
@@ -848,7 +841,7 @@ applyTextEdits content edits = do
     parseTextEdit :: Value -> Either Text TextEdit
     parseTextEdit val = case fromJSON val of
       Success edit -> Right edit
-      Data.Aeson.Error err -> Left $ "Failed to parse text edit: " <> T.pack err
+      Aeson.Error err -> Left $ "Failed to parse text edit: " <> T.pack err
 
     editStartPos :: TextEdit -> (Int, Int)
     editStartPos edit =
@@ -904,24 +897,24 @@ instance FromJSON Position where
 -- Replace text in a range
 replaceTextRange :: Text -> Position -> Position -> Text -> Text
 replaceTextRange text start end newText =
-  let lines = T.lines text
+  let textLines = T.lines text
       startLine = positionLine start
       startChar = positionCharacter start
       endLine = positionLine end
       endChar = positionCharacter end
    in if startLine == endLine
         then -- Single line replacement
-          let line = lines !! startLine
+          let line = textLines !! startLine
               before = T.take startChar line
               after = T.drop endChar line
               newLine = before <> newText <> after
-              newLines = take startLine lines ++ [newLine] ++ drop (startLine + 1) lines
-           in T.unlines newLines
+              newLines = take startLine textLines ++ [newLine] ++ drop (startLine + 1) textLines
+         in T.unlines newLines
         else -- Multi-line replacement
-          let startLineText = lines !! startLine
-              endLineText = lines !! endLine
+          let startLineText = textLines !! startLine
+              endLineText = textLines !! endLine
               before = T.take startChar startLineText
               after = T.drop endChar endLineText
               replacementLines = T.lines (before <> newText <> after)
-              newLines = take startLine lines ++ replacementLines ++ drop (endLine + 1) lines
-           in T.unlines newLines
+              newLines = take startLine textLines ++ replacementLines ++ drop (endLine + 1) textLines
+         in T.unlines newLines

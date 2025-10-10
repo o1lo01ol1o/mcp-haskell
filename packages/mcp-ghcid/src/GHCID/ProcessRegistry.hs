@@ -39,7 +39,7 @@ module GHCID.ProcessRegistry
 where
 
 import Control.Applicative ((<|>))
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (myThreadId, threadDelay)
 import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception (SomeException, fromException, onException, throwIO, try)
@@ -50,10 +50,11 @@ import Data.Function ((&))
 
 import Data.Hashable (Hashable (..))
 import Data.Char (isAlpha, isDigit, isSpace)
+import Data.List (isSuffixOf)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (NominalDiffTime, UTCTime, diffUTCTime, getCurrentTime)
 import Text.Read (readMaybe)
 import qualified ListT
 -- Common imports
@@ -66,7 +67,24 @@ import System.IO (Handle, hClose, hFlush)
 import System.IO.Error (isEOFError)
 import System.Process.Typed
 import System.Timeout (timeout)
+import System.Directory (doesDirectoryExist, listDirectory)
+import System.Environment (getExecutablePath)
+import System.Posix.Signals (sigKILL, sigTERM, signalProcessGroup)
+import System.Posix.Process (getProcessID)
+import System.Posix.Types (CPid (..), ProcessGroupID)
 import Utils.Logging
+
+watchdogCheckIntervalMicros :: Int
+watchdogCheckIntervalMicros = 5 * 1000000
+
+watchdogStaleThreshold :: NominalDiffTime
+watchdogStaleThreshold = fromInteger (toInteger watchdogStaleThresholdSeconds)
+
+watchdogStaleThresholdSeconds :: Int
+watchdogStaleThresholdSeconds = 120
+
+watchdogStopTimeoutSeconds :: Int
+watchdogStopTimeoutSeconds = 10
 
 -- | URI identifier for cabal projects
 newtype CabalURI = CabalURI {getCabalURI :: Text}
@@ -114,14 +132,17 @@ instance FromJSON GHCIDStatus where
 -- | Individual GHCID process handle with STM state
 data GHCIDHandle = GHCIDHandle
   { ghcidProcess :: Process Handle Handle Handle,
+    ghcidPid :: Maybe CPid,
     ghcidStatus :: TVar GHCIDStatus,
     ghcidOutput :: TBQueue Text, -- Buffered output lines
     ghcidErrors :: TBQueue Text, -- Error messages
     ghcidStartTime :: UTCTime,
     ghcidCabalURI :: CabalURI,
     ghcidWorkDir :: FilePath,
+    ghcidRegistryRef :: ProcessRegistry,
     ghcidOutputReader :: TVar (Maybe (Async ())),
     ghcidErrorReader :: TVar (Maybe (Async ())),
+    ghcidWatchdog :: TVar (Maybe (Async ())),
     ghcidHealthCheck :: TVar UTCTime, -- Last health check
     ghcidLastMessage :: TVar (Maybe Text)
   }
@@ -150,6 +171,11 @@ data ProcessRegistry = ProcessRegistry
     registryShutdown :: TVar Bool,
     healthMonitor :: TVar (Maybe (Async ()))
   }
+
+data StartDecision
+  = Denied Text
+  | FreshStart
+  | RestartPrev GHCIDHandle
 
 -- | Create a new process registry
 createProcessRegistry :: IO ProcessRegistry
@@ -207,42 +233,89 @@ shutdownProcessRegistry registry@ProcessRegistry {..} = do
 -- | Start a new GHCID process for the given cabal URI
 startGHCIDProcess :: ProcessRegistry -> CabalURI -> FilePath -> Maybe Text -> [String] -> IO (Either Text GHCIDHandle)
 startGHCIDProcess registry@ProcessRegistry {..} cabalURI workDir commandOverride extraArgs = do
-  isShuttingDown <- readTVarIO registryShutdown
-  if isShuttingDown
-    then return $ Left "Registry is shutting down"
-    else do
-      logInfo $ "Starting GHCID process for " <> getCabalURI cabalURI
+  decision <- atomically $ do
+    shuttingDown <- readTVar registryShutdown
+    if shuttingDown
+      then pure $ Denied "Registry is shutting down"
+      else do
+        existingHandle <- StmMap.lookup cabalURI processMap
+        case existingHandle of
+          Just handle -> do
+            status <- readTVar (ghcidStatus handle)
+            case status of
+              GHCIDStopped -> prepareRestart handle
+              GHCIDError _ -> prepareRestart handle
+              _ -> pure $ Denied "GHCID process already running for this URI"
+          Nothing -> do
+            alreadyActive <- StmSet.lookup cabalURI activeProcesses
+            if alreadyActive
+              then pure $ Denied "GHCID process already running for this URI"
+              else do
+                StmSet.insert cabalURI activeProcesses
+                pure FreshStart
 
-      -- Check if process already exists
-      existingProcess <- atomically $ StmMap.lookup cabalURI processMap
-      case existingProcess of
-        Just handle -> do
-          status <- readTVarIO (ghcidStatus handle)
-          case status of
-            GHCIDStopped -> startNewProcess
-            GHCIDError _ -> startNewProcess
-            _ -> return $ Left "GHCID process already running for this URI"
-        Nothing -> startNewProcess
+  case decision of
+    Denied err -> return $ Left err
+    RestartPrev prevHandle -> doRestart (Just prevHandle)
+    FreshStart -> doRestart Nothing
   where
-    startNewProcess = do
-      result <- try @SomeException $ createGHCIDHandle cabalURI workDir commandOverride extraArgs
-      case result of
-        Left ex -> do
-          logError $ "Failed to start GHCID process: " <> T.pack (show ex)
-          return $ Left $ "Failed to start GHCID: " <> T.pack (show ex)
-        Right handle -> do
-          -- Register in STM map
-          atomically $ do
-            StmMap.insert handle cabalURI processMap
-            StmSet.insert cabalURI activeProcesses
-            modifyTVar processCount (+ 1)
+    prepareRestart handle = do
+      StmMap.delete cabalURI processMap
+      StmSet.insert cabalURI activeProcesses
+      modifyTVar processCount (\x -> max 0 (x - 1))
+      pure $ RestartPrev handle
 
-          logInfo $ "GHCID process started successfully for " <> getCabalURI cabalURI
-          return $ Right handle
+    doRestart maybeOldHandle = do
+      validation <- validateWorkDir
+      case validation of
+        Left err -> do
+          cleanupPrevious maybeOldHandle
+          atomically $ StmSet.delete cabalURI activeProcesses
+          logError err
+          return $ Left err
+        Right () -> do
+          cleanupPrevious maybeOldHandle
+
+          logInfo $ "Starting GHCID process for " <> getCabalURI cabalURI
+          result <- try @SomeException $ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs
+          case result of
+            Left ex -> do
+              atomically $ StmSet.delete cabalURI activeProcesses
+              logError $ "Failed to start GHCID process: " <> T.pack (show ex)
+              return $ Left $ "Failed to start GHCID: " <> T.pack (show ex)
+            Right handle -> do
+              atomically $ do
+                StmMap.insert handle cabalURI processMap
+                modifyTVar processCount (+ 1)
+
+              logInfo $ "GHCID process started successfully for " <> getCabalURI cabalURI
+              return $ Right handle
+
+    cleanupPrevious = maybe (pure ()) cleanupSilently
+
+    cleanupSilently handle = do
+      _ <- try @SomeException $ cleanupGHCIDHandle handle
+      pure ()
+
+    validateWorkDir =
+      case commandOverride of
+        Just _ -> pure (Right ())
+        Nothing -> do
+          dirExists <- doesDirectoryExist workDir
+          if not dirExists
+            then pure $ Left $ "Working directory does not exist: " <> T.pack workDir
+            else do
+              contentsResult <- try @SomeException (listDirectory workDir)
+              case contentsResult of
+                Left ex -> pure $ Left $ "Unable to inspect working directory: " <> T.pack (show ex)
+                Right entries ->
+                  if any (".cabal" `isSuffixOf`) entries
+                    then pure (Right ())
+                    else pure $ Left $ "No .cabal file found in working directory " <> T.pack workDir
 
 -- | Create a new GHCID handle with proper resource management
-createGHCIDHandle :: CabalURI -> FilePath -> Maybe Text -> [String] -> IO GHCIDHandle
-createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
+createGHCIDHandle :: ProcessRegistry -> CabalURI -> FilePath -> Maybe Text -> [String] -> IO GHCIDHandle
+createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
   startTime <- getCurrentTime
 
   let ghcidExecutable = "ghcid"
@@ -268,38 +341,50 @@ createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
   logInfo launchMessage
 
   -- Configure GHCID process
-  let processConfig =
-        proc ghcidExecutable ghcidArgs
+  selfExecutable <- getExecutablePath
+  CPid parentRaw <- getProcessID
+  let wrapperArgs =
+        ["--internal-ghcid-wrapper", "--parent-pid", show (fromIntegral parentRaw :: Int), "--", ghcidExecutable]
+          ++ ghcidArgs
+      processConfig =
+        proc selfExecutable wrapperArgs
           & setWorkingDir workDir
           & setStdin createPipe
           & setStdout createPipe
           & setStderr createPipe
+          & setCreateGroup True
 
   -- Start the process
   process <- startProcess processConfig
+  rawPid <- getPid process
+  let pid = fmap (CPid . fromIntegral) rawPid
 
   -- Create STM variables
-  (status, outputQueue, errorQueue, outputReader, errorReader, healthVar, lastMsgVar) <- atomically $ do
+  (status, outputQueue, errorQueue, outputReader, errorReader, watchdogVar, healthVar, lastMsgVar) <- atomically $ do
     s <- newTVar GHCIDStarting
     oq <- newTBQueue 10000 -- 10k line buffer
     eq <- newTBQueue 1000 -- 1k error buffer
     or <- newTVar Nothing
     er <- newTVar Nothing
+    wd <- newTVar Nothing
     hv <- newTVar startTime
     lm <- newTVar (Just launchMessage)
-    return (s, oq, eq, or, er, hv, lm)
+    return (s, oq, eq, or, er, wd, hv, lm)
 
   let handle =
         GHCIDHandle
           { ghcidProcess = process,
+            ghcidPid = pid,
             ghcidStatus = status,
             ghcidOutput = outputQueue,
             ghcidErrors = errorQueue,
             ghcidStartTime = startTime,
             ghcidCabalURI = cabalURI,
             ghcidWorkDir = workDir,
+            ghcidRegistryRef = registry,
             ghcidOutputReader = outputReader,
             ghcidErrorReader = errorReader,
+            ghcidWatchdog = watchdogVar,
             ghcidHealthCheck = healthVar,
             ghcidLastMessage = lastMsgVar
           }
@@ -307,10 +392,14 @@ createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
   let setup = do
         outReader <- async $ outputReaderLoop handle (getStdout process)
         errReader <- async $ errorReaderLoop handle (getStderr process)
+        watchdog <- async $ watchdogLoop handle
+        now <- getCurrentTime
 
         atomically $ do
           writeTVar (ghcidOutputReader handle) (Just outReader)
           writeTVar (ghcidErrorReader handle) (Just errReader)
+          writeTVar (ghcidWatchdog handle) (Just watchdog)
+          writeTVar (ghcidHealthCheck handle) now
           writeTVar (ghcidStatus handle) GHCIDStarting
 
         return handle
@@ -319,15 +408,22 @@ createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
 
   handle <- setup `onException` cleanup
 
-  exitNow <- getExitCode process
-  case exitNow of
-    Nothing -> return handle
+  earlyExit <- waitForEarlyExit process handle
+  case earlyExit of
+    Nothing -> do
+      status <- readTVarIO (ghcidStatus handle)
+      case status of
+        GHCIDError errTxt -> do
+          logError $ "ghcid reported startup error for " <> getCabalURI cabalURI <> ": " <> errTxt
+          cleanup
+          throwIO (userError (T.unpack errTxt))
+        _ -> return handle
     Just code -> do
       (outLines, errLines) <- atomically $ drainQueues handle
       let decoratedErrs = map ("[stderr] " <>) errLines
           combinedLines = outLines ++ decoratedErrs
           combinedLog = T.unlines combinedLines
-          exitMsg = "ghcid exited immediately with " <> T.pack (show code)
+          exitMsg = "ghcid exited during startup with " <> T.pack (show code)
           fullMsg = if T.null combinedLog then exitMsg else exitMsg <> "\n" <> combinedLog
       atomically $ writeTVar (ghcidStatus handle) (GHCIDError fullMsg)
       logError $ "ghcid failed to start for " <> getCabalURI cabalURI <> ": " <> fullMsg
@@ -346,6 +442,95 @@ createGHCIDHandle cabalURI workDir commandOverride extraArgs = do
     escapeChar '"' = "\\\""
     escapeChar '\\' = "\\\\"
     escapeChar c = [c]
+
+    waitForEarlyExit proc ghcidHandle = poll 10
+      where
+        poll 0 = pure Nothing
+        poll n = do
+          exitCode <- getExitCode proc
+          case exitCode of
+            Just code -> pure (Just code)
+            Nothing -> do
+              status <- readTVarIO (ghcidStatus ghcidHandle)
+              case status of
+                GHCIDStarting -> do
+                  threadDelay 100000 -- 100ms
+                  poll (n - 1)
+                GHCIDError _ -> do
+                  threadDelay 100000
+                  poll (n - 1)
+                _ -> pure Nothing
+
+-- | Update the heartbeat timestamp for a handle to indicate activity.
+recordHeartbeat :: GHCIDHandle -> IO ()
+recordHeartbeat GHCIDHandle {..} = do
+  now <- getCurrentTime
+  atomically $ writeTVar ghcidHealthCheck now
+
+-- | Attempt to terminate the entire ghcid process tree (ghcid plus any children).
+terminateProcessTree :: GHCIDHandle -> IO ()
+terminateProcessTree GHCIDHandle {..} =
+  case ghcidPid of
+    Nothing -> return ()
+    Just (CPid rawPid) -> do
+      let pgid :: ProcessGroupID
+          pgid = fromIntegral rawPid
+      let send sig =
+            void $
+              try @SomeException $
+                signalProcessGroup sig pgid
+      -- First try a graceful termination.
+      send sigTERM
+      threadDelay 500000 -- give the process a moment to exit
+      exited <- getExitCode ghcidProcess
+      case exited of
+        Just _ -> return ()
+        Nothing -> do
+          -- Escalate to SIGKILL if the process group is still alive.
+          send sigKILL
+          threadDelay 200000
+
+-- | Watchdog loop that terminates ghcid processes when their heartbeat goes stale.
+watchdogLoop :: GHCIDHandle -> IO ()
+watchdogLoop handle@GHCIDHandle {..} = loop
+  where
+    loop = do
+      threadDelay watchdogCheckIntervalMicros
+      status <- readTVarIO ghcidStatus
+      case status of
+        GHCIDStopped -> return ()
+        GHCIDTerminated _ -> return ()
+        GHCIDError _ -> return ()
+        _ -> do
+          lastBeat <- readTVarIO ghcidHealthCheck
+          now <- getCurrentTime
+          let delta = diffUTCTime now lastBeat
+          if delta > watchdogStaleThreshold
+            then do
+              let elapsedSeconds :: Int
+                  elapsedSeconds = max watchdogStaleThresholdSeconds (ceiling (realToFrac delta :: Double))
+                  reason =
+                    "ghcid heartbeat stale (no activity for "
+                      <> T.pack (show elapsedSeconds)
+                      <> "s)"
+                  contextMessage =
+                    "Watchdog terminating ghcid for "
+                      <> getCabalURI ghcidCabalURI
+                      <> ": "
+                      <> reason
+              logWarn contextMessage
+              atomically $ do
+                writeTVar ghcidStatus (GHCIDError reason)
+                writeTVar ghcidLastMessage (Just reason)
+                writeTVar ghcidWatchdog Nothing
+              stopResult <- stopGHCIDProcessWithTimeout ghcidRegistryRef watchdogStopTimeoutSeconds ghcidCabalURI
+              case stopResult of
+                Left err ->
+                  logError $ "Watchdog failed to stop " <> getCabalURI ghcidCabalURI <> ": " <> err
+                Right () ->
+                  logInfo $ "Watchdog stopped ghcid for " <> getCabalURI ghcidCabalURI
+              return ()
+            else loop
 
 -- | Output reader loop with error handling
 outputReaderLoop :: GHCIDHandle -> Handle -> IO ()
@@ -414,22 +599,32 @@ stopGHCIDProcessWithTimeout ProcessRegistry {..} timeoutSecs cabalURI = do
 
 -- | Clean up a GHCID handle
 cleanupGHCIDHandle :: GHCIDHandle -> IO ()
-cleanupGHCIDHandle GHCIDHandle {..} = do
+cleanupGHCIDHandle handle@GHCIDHandle {..} = do
   logInfo $ "Cleaning up GHCID handle for " <> getCabalURI ghcidCabalURI
+
+  currentThread <- myThreadId
+  let cancelAsync maybeAsync = case maybeAsync of
+        Nothing -> return ()
+        Just worker -> do
+          let workerTid = asyncThreadId worker
+          when (workerTid /= currentThread) $ cancel worker
 
   -- Cancel async readers
   maybeOutReader <- readTVarIO ghcidOutputReader
   maybeErrReader <- readTVarIO ghcidErrorReader
+  maybeWatchdog <- readTVarIO ghcidWatchdog
 
-  case maybeOutReader of
-    Just reader -> cancel reader
-    Nothing -> return ()
+  cancelAsync maybeOutReader
+  cancelAsync maybeErrReader
+  cancelAsync maybeWatchdog
 
-  case maybeErrReader of
-    Just reader -> cancel reader
-    Nothing -> return ()
+  atomically $ do
+    writeTVar ghcidOutputReader Nothing
+    writeTVar ghcidErrorReader Nothing
+    writeTVar ghcidWatchdog Nothing
 
   -- Stop the process
+  terminateProcessTree handle
   result <- try @SomeException $ stopProcess ghcidProcess
   case result of
     Left ex -> logWarn $ "Error stopping GHCID process: " <> T.pack (show ex)
@@ -464,6 +659,7 @@ getProcessLastMessage GHCIDHandle {..} = readTVarIO ghcidLastMessage
 -- | Consume and process a stdout line from ghcid.
 processStdoutLine :: GHCIDHandle -> Text -> IO ()
 processStdoutLine handle@GHCIDHandle {..} rawLine = do
+  recordHeartbeat handle
   let line = sanitizeLine rawLine
   atomically $ writeTBQueue ghcidOutput line
   when (not $ T.null line) $ do
@@ -474,6 +670,7 @@ processStdoutLine handle@GHCIDHandle {..} rawLine = do
 -- | Consume and process a stderr line from ghcid.
 processStderrLine :: GHCIDHandle -> Text -> IO ()
 processStderrLine handle@GHCIDHandle {..} rawLine = do
+  recordHeartbeat handle
   let line = sanitizeLine rawLine
   atomically $ writeTBQueue ghcidErrors line
   when (not $ T.null line) $ do
@@ -639,8 +836,7 @@ checkProcessHealth registry cabalURI = do
     Nothing -> return $ Left "Process not found"
     Just handle -> do
       status <- getProcessStatus handle
-      now <- getCurrentTime
-      atomically $ writeTVar (ghcidHealthCheck handle) now
+      recordHeartbeat handle
       return $ Right status
 
 -- | Internal health check for a single process

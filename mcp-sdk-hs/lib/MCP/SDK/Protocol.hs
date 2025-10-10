@@ -6,10 +6,18 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module MCP.SDK.Protocol where
+module MCP.SDK.Protocol
+  ( JSONRPCMessage (..)
+  , JSONRPCRequestMessage (..)
+  , JSONRPCResponseMessage (..)
+  , JSONRPCNotificationMessage (..)
+  , JSONRPCError (..)
+  , methodToText
+  , textToMethod
+  , encodeRequest
+  , decodeResponse
+  ) where
 
-import Control.Applicative ((<|>))
-import Control.Monad ((>=>))
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.Maybe (isJust)
@@ -86,7 +94,7 @@ encodeRequest ::
   RequestId ->
   MCPRequest m ->
   JSONRPCRequestMessage
-encodeRequest reqId req = JSONRPCRequestMessage reqId method params
+encodeRequest requestIdValue req = JSONRPCRequestMessage requestIdValue method params
   where
     (method, params) = case req of
       InitializeReq r -> (methodToText Initialize, toJSON r)
@@ -108,7 +116,7 @@ decodeResponse ::
   Method ->
   JSONRPCResponseMessage ->
   Either MCPError (ResponseType m)
-decodeResponse expectedMethod resp
+decodeResponse _expectedMethod resp
   | Just err <- respError resp = Left (ProtocolError (errorMessage err))
   | Just result <- respResult resp =
       case fromJSON result of
@@ -141,10 +149,10 @@ instance FromJSON JSONRPCRequestMessage where
       <*> o .:? "params" .!= Null
 
 instance ToJSON JSONRPCRequestMessage where
-  toJSON (JSONRPCRequestMessage reqId method params) =
+  toJSON (JSONRPCRequestMessage requestIdValue method params) =
     object
       [ "jsonrpc" .= ("2.0" :: Text),
-        "id" .= reqId,
+        "id" .= requestIdValue,
         "method" .= method,
         "params" .= params
       ]
@@ -157,10 +165,10 @@ instance FromJSON JSONRPCResponseMessage where
       <*> o .:? "error"
 
 instance ToJSON JSONRPCResponseMessage where
-  toJSON (JSONRPCResponseMessage respId result err) =
+  toJSON (JSONRPCResponseMessage responseId result err) =
     object $
       [ "jsonrpc" .= ("2.0" :: Text),
-        "id" .= respId
+        "id" .= responseId
       ]
         ++ maybe [] (\r -> ["result" .= r]) result
         ++ maybe [] (\e -> ["error" .= e]) err

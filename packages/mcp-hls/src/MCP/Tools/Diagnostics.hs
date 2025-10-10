@@ -3,19 +3,15 @@
 
 module MCP.Tools.Diagnostics where
 
-import Control.Exception (try, SomeException)
+import Control.Exception (SomeException, try)
 import Data.Aeson
 import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import System.Process
-import System.IO.Temp
-import System.FilePath
 import MCP.Types
-import MCP.Tools.HLS (getHLSStatus, hlsProcessVar)
-import Utils.Logging
-import Control.Concurrent.MVar (readMVar)
+import MCP.Tools.HLS (getHLSStatus)
 
 -- Handle Diagnostics Tool Calls
 handleDiagnosticsTool :: Text -> Maybe Value -> IO ToolResult
@@ -50,8 +46,8 @@ formatCodeTool maybeArgs = do
       [ ToolContent "text" (Just "Missing required parameter: filePath") ]
       (Just True)
     Just (filePath, formatter) -> do
-      result <- formatHaskellFile filePath formatter
-      case result of
+      formatOutcome <- formatHaskellFile filePath formatter
+      case formatOutcome of
         Left err -> return $ ToolResult
           [ ToolContent "text" (Just $ "Error formatting code: " <> err) ]
           (Just True)
@@ -67,11 +63,11 @@ checkSyntaxTool maybeArgs = do
       [ ToolContent "text" (Just "Missing required parameter: filePath") ]
       (Just True)
     Just filePath -> do
-      result <- try $ do
+      syntaxOutcome <- try $ do
         output <- readProcess "ghc" ["-fno-code", "-fno-warn-missing-signatures", filePath] ""
         return output
       
-      case result of
+      case syntaxOutcome of
         Left (ex :: SomeException) -> return $ ToolResult
           [ ToolContent "text" (Just $ "Syntax check failed: " <> T.pack (show ex)) ]
           (Just True)
@@ -90,11 +86,11 @@ hlintSuggestionsTool maybeArgs = do
       [ ToolContent "text" (Just "Missing required parameter: filePath") ]
       (Just True)
     Just filePath -> do
-      result <- try $ do
+      hlintOutcome <- try $ do
         output <- readProcess "hlint" [filePath] ""
         return output
       
-      case result of
+      case hlintOutcome of
         Left (ex :: SomeException) -> return $ ToolResult
           [ ToolContent "text" (Just $ "Error running HLint: " <> T.pack (show ex)) ]
           (Just True)
@@ -118,36 +114,36 @@ formatHaskellFile filePath formatter = do
 -- Format with Ormolu
 formatWithOrmolu :: FilePath -> IO (Either Text Text)
 formatWithOrmolu filePath = do
-  result <- try $ readProcess "ormolu" [filePath] ""
-  case result of
+  ormoluOutcome <- try $ readProcess "ormolu" [filePath] ""
+  case ormoluOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Ormolu error: " <> T.pack (show ex)
     Right output -> return $ Right $ T.pack output
 
 -- Format with Fourmolu
 formatWithFourmolu :: FilePath -> IO (Either Text Text)
 formatWithFourmolu filePath = do
-  result <- try $ readProcess "fourmolu" [filePath] ""
-  case result of
+  fourmoluOutcome <- try $ readProcess "fourmolu" [filePath] ""
+  case fourmoluOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Fourmolu error: " <> T.pack (show ex)
     Right output -> return $ Right $ T.pack output
 
 -- Format with Brittany
 formatWithBrittany :: FilePath -> IO (Either Text Text)
 formatWithBrittany filePath = do
-  result <- try $ do
-    content <- readFile filePath
-    readProcess "brittany" [] content
-  case result of
+  brittanyOutcome <- try $ do
+    fileContent <- readFile filePath
+    readProcess "brittany" [] fileContent
+  case brittanyOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Brittany error: " <> T.pack (show ex)
     Right output -> return $ Right $ T.pack output
 
 -- Format with Stylish Haskell
 formatWithStylish :: FilePath -> IO (Either Text Text)
 formatWithStylish filePath = do
-  result <- try $ do
-    content <- readFile filePath
-    readProcess "stylish-haskell" [] content
-  case result of
+  stylishOutcome <- try $ do
+    fileContent <- readFile filePath
+    readProcess "stylish-haskell" [] fileContent
+  case stylishOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Stylish-haskell error: " <> T.pack (show ex)
     Right output -> return $ Right $ T.pack output
 
@@ -181,8 +177,8 @@ parseFormatArgs (Just args) = case fromJSON args of
 -- Type Check with GHC
 typeCheckFile :: FilePath -> IO (Either Text Text)
 typeCheckFile filePath = do
-  result <- try $ readProcess "ghc" ["-fno-code", "-v0", filePath] ""
-  case result of
+  typeCheckOutcome <- try $ readProcess "ghc" ["-fno-code", "-v0", filePath] ""
+  case typeCheckOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Type check error: " <> T.pack (show ex)
     Right "" -> return $ Right "✓ Type check passed"
     Right output -> return $ Left $ T.pack output
@@ -190,21 +186,21 @@ typeCheckFile filePath = do
 -- Get Module Imports
 getModuleImports :: FilePath -> IO (Either Text [Text])
 getModuleImports filePath = do
-  result <- try $ T.readFile filePath
-  case result of
+  moduleReadOutcome <- try $ T.readFile filePath
+  case moduleReadOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Error reading file: " <> T.pack (show ex)
-    Right content -> do
-      let imports = filter (T.isPrefixOf "import ") (T.lines content)
+    Right fileContent -> do
+      let imports = filter (T.isPrefixOf "import ") (T.lines fileContent)
       return $ Right imports
 
 -- Get Module Exports
 getModuleExports :: FilePath -> IO (Either Text [Text])
 getModuleExports filePath = do
-  result <- try $ T.readFile filePath
-  case result of
+  exportsOutcome <- try $ T.readFile filePath
+  case exportsOutcome of
     Left (ex :: SomeException) -> return $ Left $ "Error reading file: " <> T.pack (show ex)
-    Right content -> do
-      let moduleLines = filter (T.isPrefixOf "module ") (T.lines content)
+    Right fileContent -> do
+      let moduleLines = filter (T.isPrefixOf "module ") (T.lines fileContent)
       let exports = concatMap extractExports moduleLines
       return $ Right exports
   where
@@ -220,20 +216,20 @@ getDiagnosticsFromHLS filePath = do
   -- For now, we don't have direct access to the LSP client from the global state
   -- This would require refactoring to maintain an LSP client connection
   -- Fall back to GHC for now but with a note about HLS being available
-  result <- getDiagnosticsFromGHC filePath
-  case result of
-    ToolResult content isError -> return $ ToolResult 
-      (ToolContent "text" (Just "Note: Using GHC diagnostics (HLS LSP integration planned)\n") : content)
-      isError
+  ghcDiagnostics <- getDiagnosticsFromGHC filePath
+  case ghcDiagnostics of
+    ToolResult toolContent toolIsError -> return $ ToolResult 
+      (ToolContent "text" (Just "Note: Using GHC diagnostics (HLS LSP integration planned)\n") : toolContent)
+      toolIsError
 
 -- Get Diagnostics from GHC
 getDiagnosticsFromGHC :: FilePath -> IO ToolResult
 getDiagnosticsFromGHC filePath = do
-  result <- try $ do
+  ghcOutcome <- try $ do
     output <- readProcess "ghc" ["-fno-code", "-v0", filePath] ""
     return output
   
-  case result of
+  case ghcOutcome of
     Left (ex :: SomeException) -> return $ ToolResult
       [ ToolContent "text" (Just $ "Error getting diagnostics: " <> T.pack (show ex)) ]
       (Just True)

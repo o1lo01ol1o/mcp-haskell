@@ -1,4 +1,6 @@
-module MCP.SDK.Types.Auth where
+module MCP.SDK.Types.Auth
+  ( AuthInfo (..)
+  ) where
 
 import Data.Text (Text)
 

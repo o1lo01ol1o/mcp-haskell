@@ -1,9 +1,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module HLS.Config where
+module HLS.Config
+  ( HLSConfig (..)
+  , defaultHLSConfig
+  , loadHLSConfig
+  ) where
 
 import Data.Text (Text)
-import System.FilePath
 
 -- HLS Configuration
 data HLSConfig = HLSConfig

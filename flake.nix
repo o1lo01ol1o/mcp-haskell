@@ -56,6 +56,7 @@
               attr = "runtime";
               extraArgs = [ "--accept-flake-config" ];
             };
+            obBinaryPath = "/Users/timpierson/.nix-profile/bin/ob";
           };
 
           # Make it the default package
@@ -123,6 +124,7 @@
           { system
           , shell ? null
           , obeliskCommand ? null
+          , obBinaryPath ? null
           , extraRuntimePackages ? [ ]
           }:
           let
@@ -142,7 +144,30 @@
               overrides = mcpOverlay;
             };
 
-            haskellPkg = haskellPkgs.mcp-obelisk;
+            basePkg = haskellPkgs.mcp-obelisk;
+
+            haskellPkg = pkgs.haskell.lib.overrideCabal basePkg (old: {
+              preCheck = (old.preCheck or "") + ''
+                MCP_BIN=""
+                if [ -x "$PWD/dist/build/mcp-obelisk/mcp-obelisk" ]; then
+                  MCP_BIN="$PWD/dist/build/mcp-obelisk/mcp-obelisk"
+                elif [ -x "$PWD/dist/build/mcp-obelisk/mcp-obelisk.exe" ]; then
+                  MCP_BIN="$PWD/dist/build/mcp-obelisk/mcp-obelisk.exe"
+                elif [ -d dist-newstyle ]; then
+                  MCP_BIN=$(find dist-newstyle -type f -name mcp-obelisk -perm -111 2>/dev/null | head -n 1 || true)
+                  if [ -n "$MCP_BIN" ]; then
+                    case "$MCP_BIN" in
+                      /*) : ;;
+                      *) MCP_BIN="$PWD/$MCP_BIN" ;;
+                    esac
+                  fi
+                fi
+                if [ -n "$MCP_BIN" ]; then
+                  export MCP_OBELISK_EXECUTABLE="$MCP_BIN"
+                  export MCP_OBELISK_BIN="$MCP_BIN"
+                fi
+              '';
+            });
 
             staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
 
@@ -151,11 +176,19 @@
               else if pkgs ? obelisk then pkgs.obelisk
               else throw "mkMcpObelisk: unable to locate obelisk-command in nixpkgs";
 
-            runtimeBins = [ pkgs.nix pkgs.git obPkg ] ++ extraRuntimePackages;
+            runtimeBins =
+              let baseBins = [ pkgs.nix pkgs.git ] ++ extraRuntimePackages;
+              in if obBinaryPath == null then baseBins ++ [ obPkg ] else baseBins;
+
+            obPathExport = pkgs.lib.optionalString (obBinaryPath != null) ''
+              OB_BIN=${pkgs.lib.escapeShellArg obBinaryPath}
+              export PATH="$(dirname "$OB_BIN"):$PATH"
+            '';
 
             realBinary = pkgs.writeShellScriptBin "mcp-obelisk-real" ''
               export OBELISK_SKIP_UPDATE_CHECK=1
               export PATH=${pkgs.lib.makeBinPath runtimeBins}:$PATH
+              ${obPathExport}
               exec ${staticPkg}/bin/mcp-obelisk "$@"
             '';
 
@@ -206,6 +239,7 @@
 
                 packages = [
                   pkgs.hello
+                  pkgs.zlib
                   pkgs.ghcid
                   # Add mcp-ghcid using the same GHC version as our Haskell development
                   (self.lib.mkMcpGhcid {

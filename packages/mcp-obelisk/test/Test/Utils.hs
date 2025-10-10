@@ -16,63 +16,61 @@ module Test.Utils
 
 import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (forM)
-import Data.Char (isSpace)
+import Control.Monad (filterM, forM)
 import Data.Aeson
+import Data.Aeson.Types (parseEither, parseMaybe)
 import qualified Data.ByteString.Lazy.Char8 as L8
+import Data.Char (isSpace)
 import Data.Maybe (fromMaybe)
+import Data.List (isInfixOf, maximumBy)
+import Data.Ord (comparing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Aeson.Types (parseMaybe, parseEither)
 import qualified Data.Vector as V
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory)
-import System.Environment (getEnvironment)
-import System.Exit (ExitCode (..))
+import Data.Version (showVersion)
+import System.Directory (doesDirectoryExist, doesFileExist, getCurrentDirectory, getModificationTime, listDirectory)
+import System.Environment (lookupEnv)
 import System.FilePath ((</>), takeDirectory, takeFileName)
-import System.IO (Handle, BufferMode (LineBuffering), hFlush, hGetLine, hPutStrLn, hSetBuffering, stderr)
+import System.IO (BufferMode (LineBuffering), Handle, hFlush, hGetLine, hPutStrLn, hSetBuffering, stderr)
 import System.Process.Typed
 import System.Timeout (timeout)
+import System.Info (compilerVersion)
 import Test.Hspec (expectationFailure)
 
 findMCPObeliskExecutable :: IO (Maybe FilePath)
 findMCPObeliskExecutable = do
-  packageDir <- getCurrentDirectory
-  envVars <- getEnvironment
-  let repoRoot = takeDirectory $ takeDirectory packageDir
-      cabalDir = repoRoot </> "dist-newstyle" </> "tmp"
-  createDirectoryIfMissing True cabalDir
-  let cabalEnv = ("CABAL_DIR", cabalDir) : filter ((/= "CABAL_DIR") . fst) envVars
-      cabalProc args =
-        setEnv cabalEnv
-          $ setWorkingDir repoRoot
-          $ proc "cabal" args
+  envOverride <- firstExistingEnv ["MCP_OBELISK_EXECUTABLE", "MCP_OBELISK_BIN"]
+  case envOverride of
+    Just path -> pure (Just path)
+    Nothing -> fallback
 
-  buildResult <- try @SomeException $ runProcess (cabalProc ["build", "exe:mcp-obelisk"])
-  case buildResult of
-    Left _ -> pure Nothing
-    Right _ -> do
-      attempt <- try @SomeException $ readProcess (cabalProc ["list-bin", "exe:mcp-obelisk"])
-      case attempt of
-        Right (ExitSuccess, stdoutBs, _) -> do
-          let textOut = T.pack (L8.unpack stdoutBs)
-              candidates = map T.unpack
-                $ reverse
-                $ filter (not . T.null)
-                $ map T.strip (T.lines textOut)
-          firstExisting candidates >>= maybe (searchDist repoRoot) (pure . Just)
-        _ -> searchDist repoRoot
+ where
+    fallback = do
+      cwd <- getCurrentDirectory
+      repoRoot <- locateRepoRoot cwd
+      let directCandidates =
+            [ repoRoot </> "dist/build/mcp-obelisk/mcp-obelisk"
+            , repoRoot </> "dist/build/mcp-obelisk/mcp-obelisk.exe"
+            ]
+      directExisting <- selectLatest directCandidates
+      case directExisting of
+        Just path -> pure (Just path)
+        Nothing -> do
+          let searchRoots =
+                [ repoRoot </> "dist/build"
+                , repoRoot </> "dist-newstyle"
+                ]
+          distPaths <- fmap concat $ forM searchRoots findBinaries
+          selectLatest distPaths
 
-  where
-    firstExisting [] = pure Nothing
-    firstExisting (path:rest) = do
-      exists <- doesFileExist path
-      if exists
-        then pure (Just path)
-        else firstExisting rest
-
-    searchDist root = do
-      distPaths <- findBinaries (root </> "dist-newstyle")
-      firstExisting distPaths
+    firstExistingEnv [] = pure Nothing
+    firstExistingEnv (name:names) = do
+      mVal <- lookupEnv name
+      case mVal of
+        Just path | not (null path) -> do
+          exists <- doesFileExist path
+          if exists then pure (Just path) else firstExistingEnv names
+        _ -> firstExistingEnv names
 
     findBinaries dir = do
       exists <- doesDirectoryExist dir
@@ -87,6 +85,29 @@ findMCPObeliskExecutable = do
               then findBinaries full
               else pure [full | takeFileName full == "mcp-obelisk"]
 
+
+    selectLatest paths = do
+      existing <- filterM doesFileExist paths
+      case existing of
+        [] -> pure Nothing
+        xs -> do
+          stamped <- mapM stamp xs
+          pure . Just . snd $ maximumBy (comparing fst) stamped
+
+    stamp fp = do
+      time <- getModificationTime fp
+      pure (time, fp)
+
+    locateRepoRoot path = do
+      let cabalFile = path </> "cabal.project"
+      exists <- doesFileExist cabalFile
+      if exists
+        then pure path
+        else do
+          let parent = takeDirectory path
+          if parent == path
+            then pure path
+            else locateRepoRoot parent
 
 withMCPObeliskServer :: FilePath -> ((Handle, Handle) -> IO a) -> IO a
 withMCPObeliskServer execPath action =

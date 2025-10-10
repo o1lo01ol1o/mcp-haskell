@@ -28,21 +28,18 @@ module HLS.Process
   , isHLSRunning
   ) where
 
-import Control.Concurrent.STM
 import Control.Concurrent.Async
-import Control.Exception (SomeException, try, bracket)
-import Control.Monad (void, when)
-import Data.Aeson
+import Control.Concurrent.STM
+import Control.Exception (SomeException, try)
+import Data.Aeson (Value)
+import Data.Function ((&))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime, getCurrentTime)
-import System.FilePath ((</>))
-import System.Process.Typed
 import qualified System.Directory as Dir
+import System.Process.Typed
 import System.IO (Handle)
-import Data.Function ((&))
 
-import MCP.Types hiding (HLSStatus)
 import Process.Manager
 import Process.Signals (SignalInfo)
 import Utils.Logging
@@ -172,7 +169,7 @@ initializeHLS HLSProcess{..} = do
 
 -- | Read HLS stdout
 readHLSOutput :: Handle -> IO ()
-readHLSOutput handle = do
+readHLSOutput _handle = do
   result <- try @SomeException $ do
     logInfo "HLS output reader started"
     -- This would normally read LSP messages
@@ -183,7 +180,7 @@ readHLSOutput handle = do
 
 -- | Read HLS stderr
 readHLSError :: Handle -> IO ()
-readHLSError handle = do
+readHLSError _handle = do
   result <- try @SomeException $ do
     logInfo "HLS error reader started" 
     -- This would normally read error messages

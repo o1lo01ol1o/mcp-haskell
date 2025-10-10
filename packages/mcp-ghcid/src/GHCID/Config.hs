@@ -15,9 +15,10 @@ import Data.Aeson
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
-import System.Directory (doesFileExist, getCurrentDirectory)
+import Control.Monad (filterM)
+import System.Directory (doesFileExist)
 import System.FilePath ((</>), takeBaseName)
-import Utils.FileSystem (findCabalFiles, ProjectInfo(..))
+import Utils.FileSystem (findCabalFiles)
 
 -- Re-export from Client
 import GHCID.Client (GHCIDConfig(..), defaultGHCIDConfig)
@@ -93,28 +94,19 @@ detectProjectConfig workDir = do
         ]
   
   existingMains <- filterM doesFileExist commonMainPaths
-  let targetFiles = take 1 existingMains  -- Use first found main
+  let detectedTargets = take 1 existingMains  -- Use first found main
   
   return $ GHCIDConfig
     { ghcidCommand = "ghcid"
     , ghcidArgs = ["--color=never", "--no-title"]  -- Better for parsing
-    , targetFiles = targetFiles
+    , targetFiles = detectedTargets
     , cabalFile = mainCabalFile  
     , workingDir = workDir
     , reloadOnChange = True
     , testCommand = detectTestCommand cabalFiles
     }
 
--- | Detect test command based on project structure
 detectTestCommand :: [FilePath] -> Maybe String
 detectTestCommand cabalFiles
   | not (null cabalFiles) = Just "cabal test"  -- Has cabal file
   | otherwise = Nothing
-
--- Helper function (would need proper import)
-filterM :: Monad m => (a -> m Bool) -> [a] -> m [a]
-filterM _ [] = return []
-filterM p (x:xs) = do
-  b <- p x
-  ys <- filterM p xs
-  return (if b then x:ys else ys)

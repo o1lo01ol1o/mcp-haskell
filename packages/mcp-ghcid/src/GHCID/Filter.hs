@@ -18,7 +18,7 @@ module GHCID.Filter
   ) where
 
 import Control.Exception (SomeException, try)
-import Data.Aeson (FromJSON(..), withObject, (.:), (.:?), ToJSON(..), object, (.=))
+import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.=), (.:?))
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -26,15 +26,14 @@ import System.Process.Typed
 import System.Timeout (timeout)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as LBS
-import Text.Regex.TDFA ((=~))
 import System.Exit (ExitCode(..))
 
 -- | Filter request ADT following the same pattern as other request types
 data FilterRequest
-  = GrepRequest { grepPattern :: Text }
-  | HeadRequest { headLines :: Int }
-  | TailRequest { tailLines :: Int }
-  | LinesRequest { startLine :: Int, endLine :: Int }
+  = GrepRequest Text
+  | HeadRequest Int
+  | TailRequest Int
+  | LinesRequest Int Int
   | NoFilterRequest
   deriving (Show, Eq)
 

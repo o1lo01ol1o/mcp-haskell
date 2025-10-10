@@ -9,10 +9,13 @@ module MCP.Server.GHCID
   ( runGHCIDServer,
     GHCIDServerState (..),
     initializeGHCIDServerState,
+    withGHCIDServerState,
   )
 where
 
-import Control.Exception (throw, try)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, cancel)
+import Control.Exception (bracket, throw, try)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Object, Value (..), object, (.=))
 import qualified Data.Aeson.KeyMap as KM
@@ -22,7 +25,8 @@ import qualified Data.Text as T
 
 -- Internal imports
 import GHCID.Config (GHCIDServerConfig (..))
-import GHCID.ProcessRegistry (ProcessRegistry, createProcessRegistry)
+import GHCID.ProcessRegistry (ProcessRegistry, createProcessRegistry, shutdownProcessRegistry)
+import GHCID.Signals (ShutdownConfig (..), defaultShutdownConfig, withGracefulShutdown)
 import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ToolsCapability (..), buildServerCapabilities)
 import MCP.SDK.Error (MCPError (..))
 import qualified MCP.SDK.Server as Server
@@ -32,7 +36,10 @@ import MCP.SDK.Transport (wrapTransport)
 import MCP.SDK.Transport.Stdio (createStdioTransport)
 import MCP.SDK.Types hiding (serverName, serverVersion)
 import MCP.Tools.GHCID (executeGHCIDTool)
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.IO (stdin, stdout)
+import System.Posix.Process (exitImmediately, getParentProcessID)
+import System.Posix.Types (CPid (..))
 import qualified Utils.Logging as Log
 
 -- | GHCID Server State
@@ -51,41 +58,78 @@ initializeGHCIDServerState config = do
         serverConfig = config
       }
 
+-- | Bracketed server state initialization that guarantees registry shutdown.
+withGHCIDServerState :: GHCIDServerConfig -> (GHCIDServerState -> IO a) -> IO a
+withGHCIDServerState config =
+  bracket (initializeGHCIDServerState config) (shutdownProcessRegistry . ghcidRegistry)
+
+parentCheckIntervalMicros :: Int
+parentCheckIntervalMicros = 1 * 1000000
+
+-- | Monitor the parent process; if it exits unexpectedly, shut down the registry.
+withParentDeathWatcher :: ProcessRegistry -> IO a -> IO a
+withParentDeathWatcher registry action = do
+  initialParent <- getParentProcessID
+  let CPid rawParent = initialParent
+  if rawParent <= 1
+    then action
+    else bracket (async (watch initialParent)) cancel (const action)
+  where
+    watch parentPid = loop
+      where
+        loop = do
+          threadDelay parentCheckIntervalMicros
+          currentParent <- getParentProcessID
+          if currentParent == parentPid
+            then loop
+            else do
+              Log.logWarn "Detected parent process exit; shutting down ghcid registry"
+              shutdownProcessRegistry registry
+              exitImmediately (ExitFailure 130)
+
 -- | Run GHCID MCP server using the SDK
 runGHCIDServer :: GHCIDServerConfig -> IO ()
 runGHCIDServer config = do
   Log.logInfo "Starting GHCID MCP server with SDK integration"
 
-  result <- try @MCPError $ do
-    -- Initialize server state
-    ghcidState <- liftIO $ initializeGHCIDServerState config
+  let shutdownConfig =
+        defaultShutdownConfig
+          { shutdownGracePeriod = 30,
+            shutdownForceDelay = 10,
+            shutdownLogOutput = True,
+            shutdownExitCode = ExitSuccess
+          }
 
-    -- Create stdio transport
-    transport <- liftIO $ createStdioTransport stdin stdout
+  result <- try @MCPError $
+    withGHCIDServerState config $ \ghcidState -> do
+      withParentDeathWatcher (ghcidRegistry ghcidState) $
+        withGracefulShutdown shutdownConfig (Just $ ghcidRegistry ghcidState) $ do
+        -- Create stdio transport
+        transport <- liftIO $ createStdioTransport stdin stdout
 
-    -- Build server with SDK
-    let sdkConfig =
-          Server.defaultServerConfig
-            { serverInstructions = Just (instructionsMessage config)
-            }
+        -- Build server with SDK
+        let sdkConfig =
+              Server.defaultServerConfig
+                { serverInstructions = Just (instructionsMessage config)
+                }
 
-    serverResult <-
-      liftIO $
-        Server.finalizeServer $
-          Server.withServerConfig sdkConfig $
-            Server.withServerCapabilities createServerCapabilities $
-              Server.withServerInfo (serverName config) (serverVersion config) $
-                Server.withServerTransport (wrapTransport transport) $
-                  Server.buildServer
+        serverResult <-
+          liftIO $
+            Server.finalizeServer $
+              Server.withServerConfig sdkConfig $
+                Server.withServerCapabilities createServerCapabilities $
+                  Server.withServerInfo (serverName config) (serverVersion config) $
+                    Server.withServerTransport (wrapTransport transport) $
+                      Server.buildServer
 
-    case serverResult of
-      Left err -> throw err
-      Right serverEnv -> do
-        -- Register GHCID tools
-        liftIO $ runServerM serverEnv $ registerGHCIDTools ghcidState
+        case serverResult of
+          Left err -> throw err
+          Right serverEnv -> do
+            -- Register GHCID tools
+            liftIO $ runServerM serverEnv $ registerGHCIDTools ghcidState
 
-        -- Run the server
-        liftIO $ Server.runServer serverEnv
+            -- Run the server
+            liftIO $ Server.runServer serverEnv
   case result of
     Left mcpError -> do
       Log.logError $ "GHCID MCP server failed: " <> T.pack (show mcpError)

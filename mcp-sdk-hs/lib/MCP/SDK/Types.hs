@@ -11,7 +11,61 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module MCP.SDK.Types where
+module MCP.SDK.Types
+  ( latestProtocolVersion
+  , defaultNegotiatedProtocolVersion
+  , supportedProtocolVersions
+  , RequestId (..)
+  , requestIdToText
+  , Method (..)
+  , RequestType
+  , ResponseType
+  , MCPRequest (..)
+  , ClientInfo (..)
+  , ServerInfo (..)
+  , Implementation
+  , Capabilities (..)
+  , InitializeRequest (..)
+  , ToolsListRequest (..)
+  , ToolsCallRequest (..)
+  , ResourcesListRequest (..)
+  , ResourcesReadRequest (..)
+  , PromptsGetRequest (..)
+  , PromptsListRequest (..)
+  , PingRequest (..)
+  , CompletionReference (..)
+  , CompletionArgument (..)
+  , CompletionContext (..)
+  , CompleteRequest (..)
+  , CompleteResponse (..)
+  , CreateMessageRequest (..)
+  , CreateMessageResponse (..)
+  , ElicitRequest (..)
+  , ElicitResponse (..)
+  , InitializeResponse (..)
+  , Tool (..)
+  , ToolHandlerContext (..)
+  , ToolDefinition (..)
+  , ToolsListResponse (..)
+  , ToolCallResult (..)
+  , ToolsCallResponse (..)
+  , Resource (..)
+  , CompletionHandler
+  , ResourceTemplate (..)
+  , ResourcesListResponse (..)
+  , ResourcesReadResponse (..)
+  , Prompt (..)
+  , PromptArgument (..)
+  , PromptDefinition (..)
+  , PromptsListResponse (..)
+  , PromptMessage (..)
+  , PromptsGetResponse (..)
+  , PingResponse (..)
+  , Content (..)
+  , ImageData (..)
+  , ResourceRefContent (..)
+  , Role (..)
+  ) where
 
 import Data.Aeson
 import Data.Aeson.KeyMap (insert)
@@ -471,10 +525,10 @@ instance FromJSON Capabilities where
       <*> o .:? "sampling"
 
 instance ToJSON Capabilities where
-  toJSON (Capabilities experimental sampling) =
+  toJSON (Capabilities experimentalCapabilities samplingCapabilities) =
     object
-      [ "experimental" .= experimental,
-        "sampling" .= sampling
+      [ "experimental" .= experimentalCapabilities,
+        "sampling" .= samplingCapabilities
       ]
 
 instance FromJSON Role where
@@ -611,8 +665,8 @@ instance FromJSON CreateMessageRequest where
       <*> o .:? "sampling"
 
 instance ToJSON CreateMessageRequest where
-  toJSON (CreateMessageRequest messages sampling) =
-    object ["messages" .= messages, "sampling" .= sampling]
+  toJSON (CreateMessageRequest messages payloadSampling) =
+    object ["messages" .= messages, "sampling" .= payloadSampling]
 
 instance FromJSON CreateMessageResponse where
   parseJSON = withObject "CreateMessageResponse" $ \o ->
@@ -655,8 +709,8 @@ instance FromJSON ToolsListResponse where
       <*> o .:? "nextCursor"
 
 instance ToJSON ToolsListResponse where
-  toJSON (ToolsListResponse tools cursor) =
-    object ["tools" .= tools, "nextCursor" .= cursor]
+  toJSON (ToolsListResponse toolEntries cursor) =
+    object ["tools" .= toolEntries, "nextCursor" .= cursor]
 
 instance FromJSON ToolsCallResponse where
   parseJSON = withObject "ToolsCallResponse" $ \o -> do
@@ -677,8 +731,8 @@ instance FromJSON ResourcesListResponse where
       <*> o .:? "nextCursor"
 
 instance ToJSON ResourcesListResponse where
-  toJSON (ResourcesListResponse resources cursor) =
-    object ["resources" .= resources, "nextCursor" .= cursor]
+  toJSON (ResourcesListResponse resourceEntries cursor) =
+    object ["resources" .= resourceEntries, "nextCursor" .= cursor]
 
 instance FromJSON ResourcesReadResponse where
   parseJSON = withObject "ResourcesReadResponse" $ \o ->
@@ -694,8 +748,8 @@ instance FromJSON PromptsListResponse where
       <*> o .:? "nextCursor"
 
 instance ToJSON PromptsListResponse where
-  toJSON (PromptsListResponse prompts cursor) =
-    object ["prompts" .= prompts, "nextCursor" .= cursor]
+  toJSON (PromptsListResponse promptEntries cursor) =
+    object ["prompts" .= promptEntries, "nextCursor" .= cursor]
 
 instance FromJSON PromptsGetResponse where
   parseJSON = withObject "PromptsGetResponse" $ \o ->

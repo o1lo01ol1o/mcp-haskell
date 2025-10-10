@@ -3,21 +3,36 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module MCP.Resources where
+module MCP.Resources
+  ( handleResourceRead
+  , readHLSLogs
+  , readHLSConfig
+  , readProjectInfo
+  , readWorkspaceSymbols
+  , readFileResource
+  , findHLSLogFiles
+  , findHLSConfigFiles
+  , readConfigFile
+  , encodeProjectInfo
+  , getWorkspaceSymbols
+  , getMimeType
+  , getAvailableResources
+  , watchResourceChanges
+  , validateResourceURI
+  , getResourceMetadata
+  ) where
 
 import Control.Exception (SomeException, try)
 import Control.Monad (filterM)
-import Data.Aeson
+import Data.Aeson (encode, object, (.=))
 import Data.ByteString (toStrict)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as T
-import qualified HLS.Client
 import MCP.Types
 import System.Directory
 import System.FilePath
-import System.IO
 import Utils.FileSystem
 import Utils.Logging
 
@@ -189,12 +204,6 @@ getMimeType path = case takeExtension path of
   ".txt" -> Just "text/plain"
   ".log" -> Just "text/plain"
   _ -> Just "text/plain"
-
--- Helper function for concurrent map
-concatMapM :: (Monad m) => (a -> m [b]) -> [a] -> m [b]
-concatMapM f xs = do
-  results <- mapM f xs
-  return $ concat results
 
 -- Get Available Resources
 getAvailableResources :: IO [Resource]

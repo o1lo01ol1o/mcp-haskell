@@ -7,10 +7,11 @@ module Test.Utils where
 
 import Control.Concurrent (ThreadId, threadDelay)
 import Control.Concurrent.MVar
-import Control.Exception (SomeException, bracket, try)
+import Control.Exception (SomeException, bracket, finally, mask, onException, try)
 import Control.Monad (filterM, forM, unless, when)
 import Test.Hspec (expectationFailure)
 import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
 import Data.Aeson.Types (parseEither, parseMaybe)
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Data.Char (isSpace)
@@ -22,9 +23,12 @@ import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileE
 import System.Environment (getEnvironment, lookupEnv)
 import System.FilePath ((</>), takeDirectory, takeFileName)
 import System.IO (BufferMode (..), Handle, hClose, hFlush, hGetLine, hPutStrLn, hSetBuffering, stderr)
+import System.IO.Error (isEOFError, ioeGetErrorType, isResourceVanishedErrorType)
+import GHC.IO.Exception (IOErrorType(InvalidArgument))
+import qualified Control.Exception as E
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, getProcessExitCode, proc, terminateProcess)
+import System.Process (CreateProcess (..), ProcessHandle, StdStream (..), createProcess, getProcessExitCode, proc, terminateProcess, waitForProcess)
 import qualified System.Process.Typed as PT
 import System.Exit (ExitCode (..))
 import System.Timeout (timeout)
@@ -34,23 +38,49 @@ import GHCID.Client (GHCIDClient, GHCIDConfig(..), defaultGHCIDConfig, createGHC
 import GHCID.Filter (FilterRequest(..), applyShellFilter)
 
 -- Global process registry for cleanup
-allGHCIDProcesses :: MVar [ProcessHandle]
+type TrackedProcess = (Int, ProcessHandle)
+
+allGHCIDProcesses :: MVar [TrackedProcess]
 allGHCIDProcesses = unsafePerformIO $ newMVar []
 {-# NOINLINE allGHCIDProcesses #-}
+
+nextProcessId :: MVar Int
+nextProcessId = unsafePerformIO $ newMVar 0
+{-# NOINLINE nextProcessId #-}
 
 -- | Cleanup all tracked processes
 cleanupAllProcesses :: IO ()
 cleanupAllProcesses = do
-  pids <- takeMVar allGHCIDProcesses
-  mapM_ cleanupProcess pids
+  tracked <- takeMVar allGHCIDProcesses
+  mapM_ (cleanupProcess . snd) tracked
   putMVar allGHCIDProcesses []
   threadDelay 500000 -- Wait 500ms for all processes to terminate
   where
     cleanupProcess pHandle = do
       exitCode <- getProcessExitCode pHandle
       when (isNothing exitCode) $ do
-        terminateProcess pHandle
+        _ <- try @SomeException $ do
+          terminateProcess pHandle
+          _ <- waitForProcess pHandle
+          pure ()
         threadDelay 200000 -- Wait 200ms for each process termination
+
+registerProcessHandle :: ProcessHandle -> IO Int
+registerProcessHandle handle = do
+  ident <- modifyMVar nextProcessId $ \n -> let n' = n + 1 in pure (n', n')
+  modifyMVar_ allGHCIDProcesses $ \handles ->
+    pure $ (ident, handle) : handles
+  pure ident
+
+unregisterProcessHandle :: Int -> IO ()
+unregisterProcessHandle ident =
+  modifyMVar_ allGHCIDProcesses $ \handles ->
+    pure $ dropHandle handles
+  where
+    dropHandle [] = []
+    dropHandle ((i,h):xs)
+      | i == ident = xs
+      | otherwise = (i,h) : dropHandle xs
 
 -- | GHCID handle for testing
 data GHCIDHandle = GHCIDHandle
@@ -69,10 +99,9 @@ startTestGHCID workDir = do
       Left err -> return $ Left err
       Right _ -> do
         let handle = GHCIDHandle client workDir
-        -- Give GHCID a moment to initialize
-        threadDelay 2000000 -- 2 second delay
+        waitForOutput handle 40
         return $ Right handle
-        
+  
   case result of
     Left ex -> return $ Left $ "Failed to start GHCID: " <> T.pack (show ex)
     Right res -> return res
@@ -91,9 +120,10 @@ withTestGHCID workDir action = do
     (\eitherHandle -> case eitherHandle of
        Left _ -> return ()
        Right handle -> stopTestGHCID handle)
-    (\eitherHandle -> case eitherHandle of
-       Left err -> error $ T.unpack err
-       Right handle -> action handle)
+    (\eitherHandle ->
+       case eitherHandle of
+         Left err -> error $ T.unpack err
+         Right handle -> action handle)
   case result of
     Left ex -> return $ Left $ T.pack $ show ex
     Right res -> return $ Right res
@@ -132,13 +162,15 @@ withTestHaskellProject files action = withSystemTempDirectory "ghcid-test" $ \tm
 -- | MCP Server handle for testing GHCID tools
 data MCPGHCIDServer = MCPGHCIDServer
   { mcpProcess :: ProcessHandle,
+    mcpProcessId :: Int,
     mcpStdin :: Handle,
     mcpStdout :: Handle,
     mcpProjectPath :: FilePath
   }
 
 instance Show MCPGHCIDServer where
-  show (MCPGHCIDServer _ _ _ path) = "MCPGHCIDServer{mcpProjectPath=" ++ show path ++ "}"
+  show (MCPGHCIDServer _ ident _ _ path) =
+    "MCPGHCIDServer{mcpProcessId=" ++ show ident ++ ", mcpProjectPath=" ++ show path ++ "}"
 
 -- | Discover MCP GHCID executable dynamically
 findMCPGHCIDExecutable :: IO (Maybe FilePath)
@@ -212,7 +244,7 @@ withMCPGHCIDServer projectPath action = do
     Right res -> return $ Right res
 
 startMCPGHCIDServer :: FilePath -> IO MCPGHCIDServer
-startMCPGHCIDServer projectPath = do
+startMCPGHCIDServer projectPath = mask $ \restore -> do
   mcpExecutable <- findMCPGHCIDExecutable
   case mcpExecutable of
     Nothing -> error "MCP GHCID executable not found. Set MCP_GHCID_EXECUTABLE or ensure mcp-ghcid is in PATH"
@@ -225,26 +257,38 @@ startMCPGHCIDServer projectPath = do
             std_err = NoStream
           }
 
+      ident <- registerProcessHandle proc_h
+
       -- Set buffering
       hSetBuffering stdin_h NoBuffering
       hSetBuffering stdout_h LineBuffering
 
-      -- Give MCP server time to start
-      threadDelay 1000000 -- 1 second
-      return $ MCPGHCIDServer proc_h stdin_h stdout_h projectPath
+      let server = MCPGHCIDServer proc_h ident stdin_h stdout_h projectPath
+          startup = do
+            threadDelay 1000000 -- 1 second
+            pure server
+
+      restore startup `onException` stopMCPGHCIDServer server
 
 stopMCPGHCIDServer :: MCPGHCIDServer -> IO ()
-stopMCPGHCIDServer (MCPGHCIDServer _proc stdin_h stdout_h _) = do
-  result <- try @SomeException $ do
+stopMCPGHCIDServer (MCPGHCIDServer proc ident stdin_h stdout_h _) = do
+  unregisterProcessHandle ident
+  _ <- try @SomeException $ do
     hClose stdin_h
     hClose stdout_h
-  case result of
-    Left _ -> return () -- Ignore cleanup errors
-    Right _ -> return ()
+  _ <- try @SomeException $ do
+    exitCode <- getProcessExitCode proc
+    case exitCode of
+      Nothing -> do
+        terminateProcess proc
+        _ <- waitForProcess proc
+        pure ()
+      Just _ -> pure ()
+  pure ()
 
 -- | Test an MCP GHCID tool
 testMCPGHCIDTool :: MCPGHCIDServer -> Text -> Maybe Value -> Int -> IO (Either Text Value)
-testMCPGHCIDTool (MCPGHCIDServer _ stdin_h stdout_h _) toolName maybeArgs timeoutMicros = do
+testMCPGHCIDTool (MCPGHCIDServer _ _ stdin_h stdout_h _) toolName maybeArgs timeoutMicros = do
   result <- try $ do
     let request = object
           [ "jsonrpc" .= ("2.0" :: Text)
@@ -349,23 +393,53 @@ checkResourceLeaks ResourceTracker{..} = do
 -- Integration testing helpers (mirrors mcp-obelisk utilities)
 withMCPGhcidServer :: FilePath -> ((Handle, Handle) -> IO a) -> IO a
 withMCPGhcidServer execPath action =
-  bracket start stop $ \(_, handles) -> action handles
-  where
-    start = do
-      let cfg =
-            PT.setStdin PT.createPipe
-              $ PT.setStdout PT.createPipe
-              $ PT.setStderr PT.inherit
-              $ PT.proc execPath []
-      process <- PT.startProcess cfg
-      let stdinHandle = PT.getStdin process
-          stdoutHandle = PT.getStdout process
-      hSetBuffering stdinHandle LineBuffering
-      hSetBuffering stdoutHandle LineBuffering
-      pure (process, (stdinHandle, stdoutHandle))
-    stop (process, _) = do
-      _ <- try @SomeException $ PT.stopProcess process
-      pure ()
+  mask $ \restore -> do
+    (Just stdinHandle, Just stdoutHandle, _, procHandle) <-
+      createProcess (proc execPath [])
+        { std_in = CreatePipe
+        , std_out = CreatePipe
+        , std_err = Inherit
+        }
+
+    ident <- registerProcessHandle procHandle
+
+    let cleanup = do
+          let shutdownMsg = object
+                [ "jsonrpc" .= ("2.0" :: Text)
+                , "method" .= ("notifications/shutdown" :: Text)
+                ]
+              exitMsg = object
+                [ "jsonrpc" .= ("2.0" :: Text)
+                , "method" .= ("notifications/exit" :: Text)
+                ]
+
+              sendQuiet value =
+                try @SomeException $ do
+                  L8.hPutStrLn stdinHandle (encode value)
+                  hFlush stdinHandle
+                  threadDelay 200000
+
+          _ <- sendQuiet shutdownMsg
+          _ <- sendQuiet exitMsg
+
+          _ <- try @SomeException $ hClose stdinHandle
+          _ <- try @SomeException $ hClose stdoutHandle
+
+          exitResult <- timeout (5 * 1000000) (waitForProcess procHandle)
+          case exitResult of
+            Just _ -> pure ()
+            Nothing -> do
+              _ <- try @SomeException $ terminateProcess procHandle
+              _ <- try @SomeException $ waitForProcess procHandle
+              pure ()
+
+          unregisterProcessHandle ident
+
+    hSetBuffering stdinHandle LineBuffering
+    hSetBuffering stdoutHandle LineBuffering
+
+    restore (action (stdinHandle, stdoutHandle))
+      `finally` cleanup
 
 sendRequest :: Handle -> Value -> IO ()
 sendRequest h value = do
@@ -373,20 +447,36 @@ sendRequest h value = do
   hFlush h
 
 readResponse :: Handle -> Int -> IO (Either String Value)
-readResponse h micros = do
-  let readJsonLine = do
-        line <- hGetLine h
-        let trimmed = dropWhile isSpace line
-        if not (null trimmed) && head trimmed == '{'
-          then pure $ eitherDecode (L8.pack trimmed)
-          else do
-            hPutStrLn stderr $ "Ignoring non-JSON line from server: " <> line
-            readJsonLine
+readResponse h micros = loop
+  where
+    loop = do
+      res <- timeout micros readJsonLine
+      case res of
+        Nothing -> pure $ Left "Timed out waiting for MCP response"
+        Just decoded ->
+          case decoded of
+            Right (Object obj)
+              | KM.member "id" obj -> pure decoded
+              | Just (String method) <- KM.lookup "method" obj -> do
+                  hPutStrLn stderr $ "Ignoring notification from server: " <> T.unpack method
+                  loop
+            _ -> pure decoded
 
-  res <- timeout micros readJsonLine
-  case res of
-    Nothing -> pure $ Left "Timed out waiting for MCP response"
-    Just decoded -> pure decoded
+    readJsonLine = do
+      lineResult <- try @E.IOException (hGetLine h)
+      case lineResult of
+        Left ioEx
+          | isEOFError ioEx -> pure $ Left "Connection closed"
+          | isResourceVanishedErrorType (ioeGetErrorType ioEx) -> pure $ Left "Connection closed"
+          | ioeGetErrorType ioEx == InvalidArgument -> pure $ Left "Connection closed"
+          | otherwise -> pure $ Left ("Transport read error: " <> show ioEx)
+        Right line -> do
+          let trimmed = dropWhile isSpace line
+          if not (null trimmed) && head trimmed == '{'
+            then pure $ eitherDecode (L8.pack trimmed)
+            else do
+              hPutStrLn stderr $ "Ignoring non-JSON line from server: " <> line
+              readJsonLine
 
 pollForMessage :: (Handle, Handle) -> Text -> Text -> Int -> IO (Either String Text)
 pollForMessage (hin, hout) cabalUri needle attempts = loop attempts Nothing
@@ -541,3 +631,13 @@ extractToolText = parseMaybe $ withObject "response" $ \o -> do
 
 assertAllGood :: Text -> Bool
 assertAllGood msg = "all good" `T.isInfixOf` T.toLower msg
+waitForOutput :: GHCIDHandle -> Int -> IO ()
+waitForOutput handle attempts
+  | attempts <= 0 = pure ()
+  | otherwise = do
+      output <- getCurrentOutput (ghcidClient handle)
+      if any (not . isSpace) (T.unpack output)
+        then pure ()
+        else do
+          threadDelay 200000
+          waitForOutput handle (attempts - 1)

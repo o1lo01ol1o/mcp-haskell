@@ -3,7 +3,13 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module MCP.SDK.Server.State where
+module MCP.SDK.Server.State
+  ( RegisteredTool (..)
+  , RegisteredPrompt (..)
+  , RegisteredResource (..)
+  , ServerContext (..)
+  , newServerContext
+  ) where
 
 import Control.Concurrent.STM (TVar, newTVarIO)
 import Data.Map.Strict (Map)
@@ -21,16 +27,14 @@ data RegisteredTool m = RegisteredTool
   { rtDefinition :: ToolDefinition m,
     rtEnabled :: Bool
   }
-
-deriving instance (Show (ToolDefinition m)) => Show (RegisteredTool m)
+  deriving stock (Show)
 
 -- | Represents a prompt that has been registered with the server.
 data RegisteredPrompt m = RegisteredPrompt
   { rpDefinition :: PromptDefinition m,
     rpEnabled :: Bool
   }
-
-deriving instance (Show (PromptDefinition m)) => Show (RegisteredPrompt m)
+  deriving stock (Show)
 
 -- | Represents a resource that has been registered with the server.
 data RegisteredResource = RegisteredResource

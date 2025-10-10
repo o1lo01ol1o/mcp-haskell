@@ -2,7 +2,9 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module MCP.Tools.Documentation where
+module MCP.Tools.Documentation
+  ( handleDocumentationTool
+  ) where
 
 import Control.Exception (try, SomeException)
 import Data.Aeson
@@ -10,148 +12,144 @@ import qualified Data.Aeson.KeyMap as KM
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import System.Process
 import System.Directory
-import System.FilePath
-import Text.Regex.Posix
-import Text.Regex.Posix.String ()
-import MCP.Types
-import Utils.FileSystem
+import System.Process
+import qualified MCP.Types as Types
 
 -- Handle Documentation Tool Calls
-handleDocumentationTool :: Text -> Maybe Value -> IO ToolResult
+handleDocumentationTool :: Text -> Maybe Value -> IO Types.ToolResult
 handleDocumentationTool toolName maybeArgs = case toolName of
   "show_documentation" -> showDocumentationTool maybeArgs
   "search_haddock" -> searchHaddockTool maybeArgs
   "generate_docs" -> generateDocsTool maybeArgs
   "browse_module_docs" -> browseModuleDocsTool maybeArgs
   "get_symbol_info" -> getSymbolInfoTool maybeArgs
-  _ -> return $ ToolResult
-    [ ToolContent "text" (Just $ "Unknown documentation tool: " <> toolName) ]
+  _ -> return $ Types.ToolResult
+    [ Types.ToolContent "text" (Just $ "Unknown documentation tool: " <> toolName) ]
     (Just True)
 
 -- Show Documentation Tool
-showDocumentationTool :: Maybe Value -> IO ToolResult
+showDocumentationTool :: Maybe Value -> IO Types.ToolResult
 showDocumentationTool maybeArgs = do
   case parseModuleName maybeArgs of
-    Nothing -> return $ ToolResult
-      [ ToolContent "text" (Just "Missing required parameter: moduleName") ]
+    Nothing -> return $ Types.ToolResult
+      [ Types.ToolContent "text" (Just "Missing required parameter: moduleName") ]
       (Just True)
     Just moduleName -> do
       result <- try $ findModuleDocumentation moduleName
       case result of
-        Left (ex :: SomeException) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Error finding documentation: " <> T.pack (show ex)) ]
+        Left (ex :: SomeException) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Error finding documentation: " <> T.pack (show ex)) ]
           (Just True)
         Right (Right docPath) -> (case docPath of
             Just path -> do
               docContent <- try $ T.readFile path
               case docContent of
-                Left (ex :: SomeException) -> return $ ToolResult
-                  [ ToolContent "text" (Just $ "Error reading documentation: " <> T.pack (show ex)) ]
+                Left (ex :: SomeException) -> return $ Types.ToolResult
+                  [ Types.ToolContent "text" (Just $ "Error reading documentation: " <> T.pack (show ex)) ]
                   (Just True)
-                Right content -> return $ ToolResult
-                  [ ToolContent "text" (Just $ "Documentation for " <> moduleName <> ":\n" <> content) ]
+                Right content -> return $ Types.ToolResult
+                  [ Types.ToolContent "text" (Just $ "Documentation for " <> moduleName <> ":\n" <> content) ]
                   Nothing
-            Nothing -> return $ ToolResult
-              [ ToolContent "text" (Just $ "No documentation found for module: " <> moduleName) ]
+            Nothing -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "No documentation found for module: " <> moduleName) ]
               (Just True))
-        Right (Left err) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Documentation lookup error: " <> err) ]
+        Right (Left err) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Documentation lookup error: " <> err) ]
           (Just True)
 
 -- Search Haddock Tool
-searchHaddockTool :: Maybe Value -> IO ToolResult
+searchHaddockTool :: Maybe Value -> IO Types.ToolResult
 searchHaddockTool maybeArgs = do
   case parseSearchQuery maybeArgs of
-    Nothing -> return $ ToolResult
-      [ ToolContent "text" (Just "Missing required parameter: query") ]
+    Nothing -> return $ Types.ToolResult
+      [ Types.ToolContent "text" (Just "Missing required parameter: query") ]
       (Just True)
     Just query -> do
       result <- try $ searchInHaddockDocs query
       case result of
-        Left (ex :: SomeException) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Error searching documentation: " <> T.pack (show ex)) ]
+        Left (ex :: SomeException) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Error searching documentation: " <> T.pack (show ex)) ]
           (Just True)
         Right matches -> do
           case matches of
-            Left err -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Search error: " <> err) ]
+            Left err -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Search error: " <> err) ]
               (Just True)
             Right matchList -> do
               let matchText = if null matchList
                     then "No matches found for: " <> query
                     else "Search results for '" <> query <> "':\n" <> T.intercalate "\n" matchList
-              return $ ToolResult
-                [ ToolContent "text" (Just matchText) ]
+              return $ Types.ToolResult
+                [ Types.ToolContent "text" (Just matchText) ]
                 Nothing
 
 -- Generate Documentation Tool
-generateDocsTool :: Maybe Value -> IO ToolResult
+generateDocsTool :: Maybe Value -> IO Types.ToolResult
 generateDocsTool maybeArgs = do
   case parseProjectPath maybeArgs of
-    Nothing -> return $ ToolResult
-      [ ToolContent "text" (Just "Missing required parameter: projectPath") ]
+    Nothing -> return $ Types.ToolResult
+      [ Types.ToolContent "text" (Just "Missing required parameter: projectPath") ]
       (Just True)
     Just projectPath -> do
       result <- try $ generateHaddockDocs projectPath
       case result of
-        Left (ex :: SomeException) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Error generating documentation: " <> T.pack (show ex)) ]
+        Left (ex :: SomeException) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Error generating documentation: " <> T.pack (show ex)) ]
           (Just True)
         Right output -> 
           case output of
-            Left err -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Documentation generation error: " <> err) ]
+            Left err -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Documentation generation error: " <> err) ]
               (Just True)
-            Right docs -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Documentation generated successfully:\n" <> docs) ]
+            Right docs -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Documentation generated successfully:\n" <> docs) ]
               Nothing
 
 -- Browse Module Documentation Tool
-browseModuleDocsTool :: Maybe Value -> IO ToolResult
+browseModuleDocsTool :: Maybe Value -> IO Types.ToolResult
 browseModuleDocsTool maybeArgs = do
   case parseModuleName maybeArgs of
-    Nothing -> return $ ToolResult
-      [ ToolContent "text" (Just "Missing required parameter: moduleName") ]
+    Nothing -> return $ Types.ToolResult
+      [ Types.ToolContent "text" (Just "Missing required parameter: moduleName") ]
       (Just True)
     Just moduleName -> do
       result <- try $ getModuleSymbols moduleName
       case result of
-        Left (ex :: SomeException) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Error browsing module: " <> T.pack (show ex)) ]
+        Left (ex :: SomeException) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Error browsing module: " <> T.pack (show ex)) ]
           (Just True)
         Right symbols -> do
           case symbols of
-            Left err -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Error getting symbols: " <> err) ]
+            Left err -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Error getting symbols: " <> err) ]
               (Just True)
             Right symbolList -> do
               let symbolsList = T.intercalate "\n" symbolList
-              return $ ToolResult
-                [ ToolContent "text" (Just $ "Symbols in " <> moduleName <> ":\n" <> symbolsList) ]
+              return $ Types.ToolResult
+                [ Types.ToolContent "text" (Just $ "Symbols in " <> moduleName <> ":\n" <> symbolsList) ]
                 Nothing
 
 -- Get Symbol Information Tool
-getSymbolInfoTool :: Maybe Value -> IO ToolResult
+getSymbolInfoTool :: Maybe Value -> IO Types.ToolResult
 getSymbolInfoTool maybeArgs = do
   case parseSymbolQuery maybeArgs of
-    Nothing -> return $ ToolResult
-      [ ToolContent "text" (Just "Missing required parameters: symbol and optionally moduleName") ]
+    Nothing -> return $ Types.ToolResult
+      [ Types.ToolContent "text" (Just "Missing required parameters: symbol and optionally moduleName") ]
       (Just True)
     Just (symbol, maybeModule) -> do
       result <- try $ getSymbolDocumentation symbol maybeModule
       case result of
-        Left (ex :: SomeException) -> return $ ToolResult
-          [ ToolContent "text" (Just $ "Error getting symbol info: " <> T.pack (show ex)) ]
+        Left (ex :: SomeException) -> return $ Types.ToolResult
+          [ Types.ToolContent "text" (Just $ "Error getting symbol info: " <> T.pack (show ex)) ]
           (Just True)
         Right info -> 
           case info of
-            Left err -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Error getting symbol info: " <> err) ]
+            Left err -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Error getting symbol info: " <> err) ]
               (Just True)
-            Right infoText -> return $ ToolResult
-              [ ToolContent "text" (Just $ "Information for " <> symbol <> ":\n" <> infoText) ]
+            Right infoText -> return $ Types.ToolResult
+              [ Types.ToolContent "text" (Just $ "Information for " <> symbol <> ":\n" <> infoText) ]
               Nothing
 
 -- Find Module Documentation
@@ -165,7 +163,7 @@ findModuleDocumentation moduleName = do
   
   foundPaths <- mapM doesFileExist possiblePaths
   case filter snd (zip possiblePaths foundPaths) of
-    (path, True):_ -> return $ Right $ Just path
+    ((path, _):_) -> return $ Right $ Just path
     [] -> return $ Right Nothing
 
 -- Search in Haddock Documentation
@@ -177,7 +175,7 @@ searchInHaddockDocs query = do
     return $ take 10 $ T.lines $ T.pack output
   
   case result of
-    Left (ex :: SomeException) -> 
+    Left (_ :: SomeException) -> 
       -- Fallback to searching in local documentation
       searchInLocalDocs query
     Right matches -> return $ Right matches
@@ -247,11 +245,6 @@ getSymbolDocumentation symbol maybeModule = do
     Right "" -> return $ Left $ "No information found for symbol: " <> symbol
     Right info -> return $ Right $ T.pack info
 
--- Get Package Documentation URL
-getPackageDocUrl :: Text -> Text -> Text
-getPackageDocUrl packageName moduleName = 
-  "https://hackage.haskell.org/package/" <> packageName <> "/docs/" <> T.replace "." "-" moduleName <> ".html"
-
 -- Parse Module Name from Arguments
 parseModuleName :: Maybe Value -> Maybe Text
 parseModuleName Nothing = Nothing
@@ -300,45 +293,3 @@ parseSymbolQuery (Just args) = case fromJSON args of
       return (symbol, maybeModule)
     _ -> Nothing
   Data.Aeson.Error _ -> Nothing
-
--- Extract Documentation Comments from Haskell Source
-extractDocComments :: Text -> [Text]
-extractDocComments content = 
-  let contentStr = T.unpack content
-      docCommentRegex = "-- \\|.*|{-\\|.*?-}|-- \\^.*|{-\\^.*?-}" :: String
-  in map T.pack (getAllTextMatches (contentStr =~ docCommentRegex :: AllTextMatches [] String))
-
--- Find Haddock HTML Files
-findHaddockHtmlFiles :: FilePath -> IO [FilePath]
-findHaddockHtmlFiles dir = do
-  result <- try @SomeException $ do
-    contents <- listDirectory dir
-    let htmlFiles = filter (\f -> takeExtension f == ".html") contents
-    return $ map (dir </>) htmlFiles
-  
-  case result of
-    Left _ -> return []
-    Right files -> return files
-
--- Parse Haddock Index
-parseHaddockIndex :: FilePath -> IO (Either Text [(Text, Text)])
-parseHaddockIndex indexPath = do
-  result <- try $ do
-    content <- T.readFile indexPath
-    -- Simple parsing - look for module links
-    let moduleLines = filter (T.isInfixOf "href=") (T.lines content)
-    return $ map parseModuleLink moduleLines
-  
-  case result of
-    Left (ex :: SomeException) -> return $ Left $ "Error parsing index: " <> T.pack (show ex)
-    Right modules -> return $ Right modules
-  where
-    parseModuleLink line =
-      case T.breakOn "href=\"" line of
-        (_, rest1) -> 
-          case T.breakOn "\"" (T.drop 6 rest1) of
-            (href, rest2) ->
-              case T.breakOn ">" rest2 of
-                (_, rest3) ->
-                  case T.breakOn "<" (T.drop 1 rest3) of
-                    (name, _) -> (name, href)

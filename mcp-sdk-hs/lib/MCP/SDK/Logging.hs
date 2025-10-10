@@ -117,3 +117,4 @@ withLogging action =
     fromLevel Logger.LevelInfo = Info
     fromLevel Logger.LevelWarn = Warn
     fromLevel Logger.LevelError = Error
+    fromLevel (Logger.LevelOther _) = Info

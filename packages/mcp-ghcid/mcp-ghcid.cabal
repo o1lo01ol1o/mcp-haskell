@@ -34,6 +34,7 @@ library
       , GHCID.ResourceManager
       , GHCID.Signals
       , GHCID.Metrics
+      , GHCID.Wrapper
 
         -- MCP Tools for GHCID
       , MCP.Tools.GHCID

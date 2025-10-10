@@ -7,12 +7,12 @@ import Data.Char (toLower)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHCID.Config (GHCIDServerConfig (..), defaultServerConfig, loadConfig)
-import GHCID.Signals (ShutdownConfig (..), defaultShutdownConfig, withGracefulShutdown)
 import MCP.Server.GHCID (runGHCIDServer)
+import GHCID.Wrapper (runGhcidWrapper)
 import qualified MCP.SDK.Logging as SDKLog
 import System.Directory (getCurrentDirectory)
 import System.Environment (getArgs)
-import System.Exit (ExitCode (ExitSuccess), exitFailure)
+import System.Exit (exitFailure)
 import Utils.Logging (LogLevel (..), logError, logInfo, setLogLevel)
 
 -- | CLI action to perform.
@@ -34,6 +34,12 @@ defaultOptions = Options {optAction = ActionRun Nothing, optLogLevel = Warn}
 main :: IO ()
 main = do
   args <- getArgs
+  case args of
+    "--internal-ghcid-wrapper" : wrapperArgs -> runGhcidWrapper wrapperArgs
+    _ -> runCLI args
+
+runCLI :: [String] -> IO ()
+runCLI args =
   case parseArgs args of
     Left err -> do
       putStrLn err
@@ -110,20 +116,9 @@ runServerWithResources :: GHCIDServerConfig -> IO ()
 runServerWithResources config = do
   logInfo "Initializing GHCID server with signal handling and resource management"
 
-  -- Create shutdown configuration
-  let shutdownConfig =
-        defaultShutdownConfig
-          { shutdownGracePeriod = 30
-          , shutdownForceDelay = 10
-          , shutdownLogOutput = True
-          , shutdownExitCode = ExitSuccess
-          }
-
-  -- Run the server with signal handling (SDK handles resource management)
-  withGracefulShutdown
-    shutdownConfig
-    Nothing -- No custom registry needed - SDK manages this
-    (runGHCIDServer config)
+  -- Run the server; signal handling is installed inside the server to ensure
+  -- it has access to the live registry, so we just launch it here.
+  runGHCIDServer config
 
 -- | Show help message
 showHelp :: IO ()

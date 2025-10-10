@@ -20,11 +20,9 @@ module GHCID.Output
   , isWarningMessage
   ) where
 
-import Data.Attoparsec.Text as A
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime, getCurrentTime)
-import System.FilePath (takeFileName)
+import Data.Time (getCurrentTime)
 import Text.Regex.TDFA ((=~))
 
 -- Re-export from Client module
@@ -49,8 +47,8 @@ data StatusUpdate
 -- | Parse GHCID output text into messages
 parseGHCIDOutput :: Text -> IO [GHCIDMessage]
 parseGHCIDOutput output = do
-  let lines = T.lines output
-  messages <- mapM parseGHCIDLine (filter (not . T.null) lines)
+  let outputLines = T.lines output
+  messages <- mapM parseGHCIDLine (filter (not . T.null) outputLines)
   return $ concat messages
 
 -- | Parse a single line of GHCID output

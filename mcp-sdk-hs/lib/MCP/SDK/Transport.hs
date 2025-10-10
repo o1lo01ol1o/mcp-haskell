@@ -21,10 +21,8 @@ module MCP.SDK.Transport
   ) where
 
 import Control.Concurrent.STM
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson (Value)
-import Data.ByteString.Lazy (ByteString)
-import Data.Text (Text)
 import MCP.SDK.Error
 import MCP.SDK.Protocol
 import MCP.SDK.Types
@@ -78,19 +76,19 @@ initTransportState config = do
 
 -- | Register a pending request
 registerPendingRequest :: TransportState -> RequestId -> STM (TMVar (Either MCPError Value))
-registerPendingRequest state reqId = do
+registerPendingRequest state requestIdValue = do
   var <- newEmptyTMVar
-  modifyTVar' (tsPendingRequests state) ((reqId, var):)
+  modifyTVar' (tsPendingRequests state) ((requestIdValue, var):)
   return var
 
 -- | Resolve a pending request
 resolvePendingRequest :: TransportState -> RequestId -> Either MCPError Value -> STM Bool
-resolvePendingRequest state reqId result = do
+resolvePendingRequest state requestIdValue result = do
   pending <- readTVar (tsPendingRequests state)
-  case lookup reqId pending of
+  case lookup requestIdValue pending of
     Nothing -> return False
     Just var -> do
-      let remaining = filter ((/= reqId) . fst) pending
+      let remaining = filter ((/= requestIdValue) . fst) pending
       writeTVar (tsPendingRequests state) remaining
       putTMVar var result
       return True
@@ -110,16 +108,16 @@ disconnect = closeTransport
 handleIncomingMessage :: TransportState -> JSONRPCMessage -> IO ()
 handleIncomingMessage state msg = case msg of
   JSONRPCResponse resp -> do
-    let reqId = respId resp
+    let requestIdValue = respId resp
     result <- case respError resp of
       Just err -> return $ Left (ProtocolError (errorMessage err))
       Nothing -> case respResult resp of
         Just val -> return $ Right val
         Nothing -> return $ Left (ProtocolError "No result in response")
     
-    resolved <- atomically $ resolvePendingRequest state reqId result
+    resolved <- atomically $ resolvePendingRequest state requestIdValue result
     if not resolved
-      then putStrLn $ "Warning: Received response for unknown request: " ++ show reqId
+      then putStrLn $ "Warning: Received response for unknown request: " ++ show requestIdValue
       else return ()
   
   JSONRPCNotification _ -> do

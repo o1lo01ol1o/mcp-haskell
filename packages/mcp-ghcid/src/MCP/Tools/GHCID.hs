@@ -22,7 +22,7 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isSpace)
 import Data.List (find)
-import Data.Maybe (listToMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -30,7 +30,8 @@ import qualified Data.Text.IO as TIO
 import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
 import qualified Data.Vector as V
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
-import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeExtension, takeFileName, (</>))
+import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeExtension, takeFileName, (</>))
+import System.IO.Error (ioError, userError)
 import GHCID.Filter (FilterRequest (..), applyShellFilter)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
 import qualified GHCID.ProcessRegistry as PR
@@ -195,8 +196,15 @@ restartGHCIDProcess registry args = do
               newWorkDir = restartWorkDir restartArgs
               requestedComponent = restartComponent restartArgs
 
-          -- Look up the existing process
+          -- Look up the existing process before we tear it down so we can reuse its settings.
           existing <- PR.getGHCIDProcess registry cabalURI
+          let previousWorkDir = fmap PR.getGHCIDWorkDir existing
+              cabalPath = T.unpack (getCabalURI cabalURI)
+              defaultWorkDir =
+                let dir = takeDirectory cabalPath
+                 in if null dir then "." else dir
+              workDir = fromMaybe defaultWorkDir (newWorkDir <|> previousWorkDir)
+
           oldProcessId <- case existing of
             Nothing -> return Nothing
             Just _ -> do
@@ -205,9 +213,6 @@ restartGHCIDProcess registry args = do
               case stopResult of
                 Left _ -> return Nothing -- Continue with restart anyway
                 Right _ -> return $ Just "old_process"
-
-          -- Start new process
-          let workDir = maybe (T.unpack $ getCabalURI cabalURI) id newWorkDir
 
           resolvedSpec <- liftIO $ resolveCommandSpec cabalURI workDir Nothing requestedComponent
           let commandOverride = renderCommandSpec resolvedSpec
@@ -472,16 +477,21 @@ resolveCommandSpec :: CabalURI -> FilePath -> Maybe CommandSpec -> Maybe Text ->
 resolveCommandSpec cabalURI workDir overrideSpec componentOverride =
   case overrideSpec of
     Just spec -> pure spec
-    Nothing -> deriveDefaultCommandSpec cabalURI workDir componentOverride
+    Nothing -> do
+      result <- deriveDefaultCommandSpec cabalURI workDir componentOverride
+      case result of
+        Left err -> ioError (userError (T.unpack err))
+        Right spec -> pure spec
 
-deriveDefaultCommandSpec :: CabalURI -> FilePath -> Maybe Text -> IO CommandSpec
+deriveDefaultCommandSpec :: CabalURI -> FilePath -> Maybe Text -> IO (Either Text CommandSpec)
 deriveDefaultCommandSpec cabalURI workDir componentOverride = do
   let rawPath = T.unpack (getCabalURI cabalURI)
   resolved <- resolveCabalFilePath workDir rawPath
   case resolved of
     Nothing -> do
-      logWarn $ "cabal file not found for " <> getCabalURI cabalURI <> "; defaulting to 'cabal repl'"
-      pure (CommandString "cabal repl")
+      let err = "Unable to locate cabal file for URI " <> getCabalURI cabalURI
+      logWarn $ err <> "; start request will fail"
+      pure (Left err)
     Just cabalFile -> do
       contents <- TIO.readFile cabalFile
       let cabalLines = T.lines contents
@@ -489,17 +499,18 @@ deriveDefaultCommandSpec cabalURI workDir componentOverride = do
           hasLib = hasLibraryStanza cabalLines
       case fmap T.strip componentOverride of
         Just comp | not (T.null comp) -> do
-          logDebug $ "Using requested component '" <> comp <> "' for " <> T.pack cabalFile
-          pure (CommandList ((map T.pack ["cabal", "repl"]) ++ [comp]))
+          let normalizedComp = normalizeComponentName comp
+          logDebug $ "Using requested component '" <> comp <> "' (normalized to '" <> normalizedComp <> "') for " <> T.pack cabalFile
+          pure $ Right (CommandList (map T.pack ["cabal", "repl"] ++ [normalizedComp]))
         _ ->
           case pkgName of
             Nothing -> do
               logWarn $ "Could not determine package name from cabal file " <> T.pack cabalFile <> "; defaulting to 'cabal repl'"
-              pure (CommandString "cabal repl")
+              pure $ Right (CommandString "cabal repl")
             Just name -> do
               let target = if hasLib then "lib:" <> name else name
               logDebug $ "Detected package name '" <> name <> "' from " <> T.pack cabalFile <> "; using target '" <> target <> "'"
-              pure (CommandList ((map T.pack ["cabal", "repl"]) ++ [target]))
+              pure $ Right (CommandList ((map T.pack ["cabal", "repl"]) ++ [target]))
 
 resolveCabalFilePath :: FilePath -> FilePath -> IO (Maybe FilePath)
 resolveCabalFilePath workDir rawPath = do
@@ -546,3 +557,28 @@ hasLibraryStanza = any isLibrary
     isLibrary line =
       let stripped = T.strip line
       in T.isPrefixOf "library" (T.toLower stripped)
+
+normalizeComponentName :: Text -> Text
+normalizeComponentName rawComp
+  | T.null trimmed = trimmed
+  | hasKnownPrefix trimmed = trimmed
+  | otherwise =
+      case T.splitOn ":" trimmed of
+        (pkg:kind:rest)
+          | let kindTag = T.toLower kind
+          , kindTag `elem` knownKinds ->
+              let suffix = if null rest then [pkg] else rest
+                  normalizedPrefix = case kindTag of
+                    "lib" -> "lib"
+                    "exe" -> "exe"
+                    "test" -> "test"
+                    "bench" -> "bench"
+                    other -> other
+               in T.intercalate ":" (normalizedPrefix : suffix)
+        _ -> trimmed
+  where
+    trimmed = T.strip rawComp
+    knownKinds = ["lib", "exe", "test", "bench"]
+    hasKnownPrefix txt =
+      let lower = T.toLower txt
+      in any (\prefix -> prefix `T.isPrefixOf` lower) (map (<> ":") knownKinds)

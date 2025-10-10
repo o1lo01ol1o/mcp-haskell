@@ -36,7 +36,6 @@ import qualified Data.Text.IO as T
 import Data.Time (UTCTime, getCurrentTime)
 import System.FilePath ((</>))
 import System.Process.Typed
-import System.Process.Typed (unsafeProcessHandle)
 import qualified System.Process as SP
 import System.IO (Handle)
 import Data.Sequence (Seq)
@@ -212,7 +211,7 @@ buildCommandLine GHCIDConfig{..} =
   [ghcidCommand] ++ ghcidArgs ++ 
   case cabalFile of
     Nothing -> targetFiles
-    Just cabal -> ["--command", "cabal repl"] ++ targetFiles
+    Just _ -> ["--command", "cabal repl"] ++ targetFiles
 
 -- Initialize GHCID process
 initializeGHCID :: GHCIDClient -> IO (Either Text GHCIDProcess)
@@ -244,7 +243,7 @@ buildGHCIDArgs GHCIDConfig{..} =
   concat
     [ case cabalFile of
         Nothing -> targetFiles
-        Just cabal -> ["--command", "cabal repl " ++ unwords targetFiles]
+        Just _ -> ["--command", "cabal repl " ++ unwords targetFiles]
     , if reloadOnChange then [] else ["--no-reload"]
     , case testCommand of
         Nothing -> []
@@ -253,7 +252,7 @@ buildGHCIDArgs GHCIDConfig{..} =
 
 -- Read GHCID stdout output
 readGHCIDOutput :: GHCIDClient -> Handle -> IO ()
-readGHCIDOutput client@GHCIDClient{..} handle = do
+readGHCIDOutput client handle = do
   result <- try @SomeException $ streamGHCIDOutput client handle
   case result of
     Left ex -> Logging.logError $ "Error reading GHCID output: " <> T.pack (show ex)
@@ -268,20 +267,11 @@ streamGHCIDOutput GHCIDClient{..} handle = do
 
 -- Read GHCID stderr output  
 readGHCIDError :: GHCIDClient -> Handle -> IO ()
-readGHCIDError client@GHCIDClient{..} handle = do
+readGHCIDError _ handle = do
   result <- try @SomeException $ T.hGetContents handle
   case result of
     Left ex -> Logging.logError $ "Error reading GHCID error: " <> T.pack (show ex)
     Right output -> Logging.logWarn $ "GHCID error output: " <> output
-
--- Parse GHCID output and extract compiler messages (legacy, for compatibility)
-parseGHCIDOutput :: GHCIDClient -> Text -> IO ()
-parseGHCIDOutput GHCIDClient{..} output = do
-  -- Add output lines to buffer
-  let outputLines = T.lines output
-  mapM_ (addToBuffer outputBuffer) outputLines
-  
-  Logging.logInfo $ "GHCID output: " <> T.take 100 output
 
 -- | Stop GHCID process  
 stopGHCID :: GHCIDClient -> IO (Either Text ())
@@ -333,7 +323,7 @@ getCurrentOutput GHCIDClient{..} = getBufferedOutput outputBuffer
 -- | Get current compiler messages (legacy compatibility - parses from current output)
 getCompilerMessages :: GHCIDClient -> IO [CompilerMessage]
 getCompilerMessages client = do
-  output <- getCurrentOutput client
+  _ <- getCurrentOutput client
   -- For now, return empty list - parsing can be implemented later if needed
   return []
 

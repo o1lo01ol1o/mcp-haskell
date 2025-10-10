@@ -35,7 +35,7 @@ import System.Process.Typed
 
 -- | Internal representation of a running ob watch process.
 data ObeliskHandle = ObeliskHandle
-  { ohProcess :: Process () Handle Handle
+  { ohProcess :: Process Handle Handle Handle
   , ohStatus :: TVar ObeliskStatus
   , ohBuffer :: TVar (Seq Text)
   , ohLastMessage :: TVar (Maybe Text)
@@ -68,8 +68,7 @@ startObeliskWatch (ProcessRegistry registryVar) projectId@(ProjectId projectPath
             setWorkingDir projectPath
               $ setStdout createPipe
               $ setStderr createPipe
-              $ setStdin inherit
-              $ setCreateGroup True
+              $ setStdin createPipe
               $ proc "ob" ["watch"]
 
       startResult <- try @SomeException $ startProcess processConfig

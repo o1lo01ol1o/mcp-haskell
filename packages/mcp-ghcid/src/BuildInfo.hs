@@ -1,6 +1,12 @@
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-module BuildInfo where
+{-# LANGUAGE TemplateHaskell #-}
+
+module BuildInfo
+  ( gitCommitHash
+  , gitCommitDate
+  , gitBranch
+  , gitIsDirty
+  ) where
 
 import Language.Haskell.TH
 import System.Process
