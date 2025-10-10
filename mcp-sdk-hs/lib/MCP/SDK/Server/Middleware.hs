@@ -1,4 +1,6 @@
-module MCP.SDK.Server.Middleware where
+module MCP.SDK.Server.Middleware
+  ( AuthMiddleware
+  ) where
 
 import MCP.SDK.Error (MCPError)
 import MCP.SDK.Protocol (JSONRPCMessage)

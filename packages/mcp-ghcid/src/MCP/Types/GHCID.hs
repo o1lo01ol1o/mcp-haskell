@@ -49,13 +49,11 @@ import Data.Aeson.Types (Parser, typeMismatch)
 import Data.Foldable (toList)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Time (UTCTime)
-import qualified Data.Vector as V
 import GHC.Generics (Generic)
 import GHCID.Filter (FilterRequest)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..))
-import MCP.SDK.Types (Content (TextContent), Tool (..), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
+import MCP.SDK.Types (Tool (..))
 
 -- | GHCID tool names
 data GHCIDToolName

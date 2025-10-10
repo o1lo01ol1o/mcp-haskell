@@ -26,7 +26,6 @@ import System.Process.Typed
 import System.Timeout (timeout)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as LBS
-import System.Exit (ExitCode(..))
 
 -- | Filter request ADT following the same pattern as other request types
 data FilterRequest

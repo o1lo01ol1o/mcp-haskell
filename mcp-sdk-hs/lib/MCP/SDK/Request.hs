@@ -30,11 +30,9 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.UUID (toString)
 import Data.UUID.V4 (nextRandom)
 import MCP.SDK.Error
-import MCP.SDK.Protocol
 import MCP.SDK.Types
 
 -- | Smart constructors that parse and validate, ensuring only valid requests can be created
@@ -99,5 +97,5 @@ class RequestHandler h where
 generateRequestId :: (MonadIO m) => m RequestId
 generateRequestId = do
   uuid <- liftIO nextRandom
-  let reqId = "req-" <> toString uuid
-  return (RequestIdText (T.pack reqId))
+  let requestIdValue = "req-" <> toString uuid
+  return (RequestIdText (T.pack requestIdValue))

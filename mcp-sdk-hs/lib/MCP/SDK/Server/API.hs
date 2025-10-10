@@ -1,11 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module MCP.SDK.Server.API where
+module MCP.SDK.Server.API
+  ( registerTool,
+    removeTool,
+    registerPrompt,
+    removePrompt,
+    registerResource,
+    removeResource,
+    sendToolListChanged,
+    sendPromptListChanged,
+    sendResourceListChanged,
+    sendListChanged,
+    createMessage,
+    elicitInput
+  )
+where
 
 import Control.Concurrent.STM (atomically, modifyTVar', newEmptyTMVarIO, readTVarIO, takeTMVar)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
-import Data.Aeson (Result (..), Value, fromJSON, object, toJSON)
+import Data.Aeson (Result (..), fromJSON, object, toJSON)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -121,7 +135,7 @@ sendListChanged method = do
   env <- ask
   -- Use case expression to extract transport from GADT
   case env of
-    ServerEnv transport _ _ _ _ config _ _ _ -> do
+    ServerEnv transport _ _ _ _ _ _ _ _ -> do
       let notification = JSONRPCNotification $ JSONRPCNotificationMessage method (object [])
       _ <- liftIO $ sendMessage transport notification
       return ()
@@ -140,20 +154,20 @@ createMessage req = do
         Just _ -> do
           -- 2. Generate a new request ID
           reqIdUUID <- liftIO nextRandom
-          let reqId = RequestIdText (toText reqIdUUID)
+          let requestIdValue = RequestIdText (toText reqIdUUID)
           -- 3. Create a TMVar to wait for the response
           responseVar <- liftIO newEmptyTMVarIO
-          liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert reqId responseVar)
+          liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert requestIdValue responseVar)
           -- 4. Send the request
-          let jsonRpcReq = JSONRPCRequest (JSONRPCRequestMessage reqId "sampling/createMessage" (toJSON req))
+          let jsonRpcReq = JSONRPCRequest (JSONRPCRequestMessage requestIdValue "sampling/createMessage" (toJSON req))
           case env of
-            ServerEnv transport _ _ _ _ config _ _ _ -> do
+            ServerEnv transport _ _ _ _ _ _ _ _ -> do
               _ <- liftIO $ sendMessage transport jsonRpcReq
               -- 5. Wait for the response with a timeout (30 seconds default)
               let timeoutMicros = 30000000
               result <- liftIO $ timeout timeoutMicros $ atomically $ takeTMVar responseVar
               -- 6. Clean up and process result
-              liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.delete reqId)
+              liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.delete requestIdValue)
               case result of
                 Nothing -> return $ Left $ RequestTimeout "sampling/createMessage"
                 Just (Left err) -> return $ Left err
@@ -170,20 +184,20 @@ elicitInput req = do
   -- We assume that if a client supports tools, it should support elicitation.
   -- 1. Generate a new request ID
   reqIdUUID <- liftIO nextRandom
-  let reqId = RequestIdText (toText reqIdUUID)
+  let requestIdValue = RequestIdText (toText reqIdUUID)
   -- 2. Create a TMVar to wait for the response
   responseVar <- liftIO newEmptyTMVarIO
-  liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert reqId responseVar)
+  liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.insert requestIdValue responseVar)
   -- 3. Send the request
-  let jsonRpcReq = JSONRPCRequest (JSONRPCRequestMessage reqId "elicitation/create" (toJSON req))
+  let jsonRpcReq = JSONRPCRequest (JSONRPCRequestMessage requestIdValue "elicitation/create" (toJSON req))
   case env of
-    ServerEnv transport _ _ _ _ config _ _ _ -> do
+    ServerEnv transport _ _ _ _ _ _ _ _ -> do
       _ <- liftIO $ sendMessage transport jsonRpcReq
       -- 4. Wait for the response with a timeout (30 seconds default)
       let timeoutMicros = 30000000
       result <- liftIO $ timeout timeoutMicros $ atomically $ takeTMVar responseVar
       -- 5. Clean up and process result
-      liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.delete reqId)
+      liftIO $ atomically $ modifyTVar' (serverPendingRequests env) (Map.delete requestIdValue)
       case result of
         Nothing -> return $ Left $ RequestTimeout "elicitation/create"
         Just (Left err) -> return $ Left err

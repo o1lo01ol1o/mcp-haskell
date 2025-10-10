@@ -390,7 +390,7 @@ checkResourceLeaks ResourceTracker{..} = do
   
   return $ null activeProcesses && null files && null threads
 
--- Integration testing helpers (mirrors mcp-obelisk utilities)
+-- Integration testing helpers for MCP servers
 withMCPGhcidServer :: FilePath -> ((Handle, Handle) -> IO a) -> IO a
 withMCPGhcidServer execPath action =
   mask $ \restore -> do

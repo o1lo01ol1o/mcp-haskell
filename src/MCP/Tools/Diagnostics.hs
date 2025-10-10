@@ -1,7 +1,26 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module MCP.Tools.Diagnostics where
+module MCP.Tools.Diagnostics
+  ( handleDiagnosticsTool,
+    getDiagnosticsTool,
+    formatCodeTool,
+    checkSyntaxTool,
+    hlintSuggestionsTool,
+    formatHaskellFile,
+    formatWithOrmolu,
+    formatWithFourmolu,
+    formatWithBrittany,
+    formatWithStylish,
+    parseFilePath,
+    parseFormatArgs,
+    typeCheckFile,
+    getModuleImports,
+    getModuleExports,
+    getDiagnosticsFromHLS,
+    getDiagnosticsFromGHC
+  )
+where
 
 import Control.Exception (try, SomeException)
 import Data.Aeson

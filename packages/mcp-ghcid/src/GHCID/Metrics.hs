@@ -34,7 +34,7 @@ module GHCID.Metrics
   ) where
 
 import Control.Concurrent.STM
-import Control.Monad (when, void)
+import Control.Monad (when)
 import Data.Aeson
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -42,7 +42,7 @@ import qualified Data.Text.IO as T
 import Data.Time (UTCTime, getCurrentTime, diffUTCTime, formatTime, defaultTimeLocale)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import System.IO (Handle, hFlush, stdout)
+import System.IO (Handle, hFlush)
 
 -- Internal imports
 import GHCID.ProcessRegistry (CabalURI(..), GHCIDStatus(..))

@@ -40,23 +40,13 @@
 
           # Provide mcp-ghcid as a convenient package using GHC 9.8.4
           mcp-ghcid = self.lib.mkMcpGhcid {
-            inherit system;
+            inherit system nixpkgs;
             ghcid = pkgs.ghcid;
             shell = {
               uri = ".";
               attr = "runtime";
               extraArgs = [ "--accept-flake-config" ];
             };
-          };
-
-          mcp-obelisk = self.lib.mkMcpObelisk {
-            inherit system;
-            shell = {
-              uri = ".";
-              attr = "runtime";
-              extraArgs = [ "--accept-flake-config" ];
-            };
-            obBinaryPath = "/Users/timpierson/.nix-profile/bin/ob";
           };
 
           # Make it the default package
@@ -67,9 +57,10 @@
       # Library functions for creating mcp-ghcid with custom ghcid
       lib = {
         # Main function to create mcp-ghcid with a provided ghcid derivation
-        # Usage: mkMcpGhcid { system = "x86_64-linux"; ghcid = myGhcidDerivation; shell = { uri = self.outPath; attr = "default"; }; }
+        # Usage: mkMcpGhcid { system = "x86_64-linux"; nixpkgs = myNixpkgs; ghcid = myGhcidDerivation; shell = { uri = self.outPath; attr = "default"; }; }
         mkMcpGhcid =
           { system
+          , nixpkgs
           , ghcid
           , shell ? null
           }:
@@ -83,7 +74,6 @@
               mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
               mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
               mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
-              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (./packages/mcp-obelisk) { };
             };
 
             haskellPkgs = pkgs.haskell.packages.ghc948.override {
@@ -120,98 +110,6 @@
           in
           pkgs.writeShellScriptBin "mcp-ghcid" launchScript;
 
-        mkMcpObelisk =
-          { system
-          , shell ? null
-          , obeliskCommand ? null
-          , obBinaryPath ? null
-          , extraRuntimePackages ? [ ]
-          }:
-          let
-            pkgs = import nixpkgs {
-              inherit system;
-              config.allowUnfree = true;
-            };
-
-            mcpOverlay = self: super: {
-              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
-              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
-              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
-              mcp-obelisk = self.callCabal2nix "mcp-obelisk" (./packages/mcp-obelisk) { };
-            };
-
-            haskellPkgs = pkgs.haskell.packages.ghc948.override {
-              overrides = mcpOverlay;
-            };
-
-            basePkg = haskellPkgs.mcp-obelisk;
-
-            haskellPkg = pkgs.haskell.lib.overrideCabal basePkg (old: {
-              preCheck = (old.preCheck or "") + ''
-                MCP_BIN=""
-                if [ -x "$PWD/dist/build/mcp-obelisk/mcp-obelisk" ]; then
-                  MCP_BIN="$PWD/dist/build/mcp-obelisk/mcp-obelisk"
-                elif [ -x "$PWD/dist/build/mcp-obelisk/mcp-obelisk.exe" ]; then
-                  MCP_BIN="$PWD/dist/build/mcp-obelisk/mcp-obelisk.exe"
-                elif [ -d dist-newstyle ]; then
-                  MCP_BIN=$(find dist-newstyle -type f -name mcp-obelisk -perm -111 2>/dev/null | head -n 1 || true)
-                  if [ -n "$MCP_BIN" ]; then
-                    case "$MCP_BIN" in
-                      /*) : ;;
-                      *) MCP_BIN="$PWD/$MCP_BIN" ;;
-                    esac
-                  fi
-                fi
-                if [ -n "$MCP_BIN" ]; then
-                  export MCP_OBELISK_EXECUTABLE="$MCP_BIN"
-                  export MCP_OBELISK_BIN="$MCP_BIN"
-                fi
-              '';
-            });
-
-            staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
-
-            obPkg = if obeliskCommand != null then obeliskCommand else
-              if pkgs ? "obelisk-command" then pkgs."obelisk-command"
-              else if pkgs ? obelisk then pkgs.obelisk
-              else throw "mkMcpObelisk: unable to locate obelisk-command in nixpkgs";
-
-            runtimeBins =
-              let baseBins = [ pkgs.nix pkgs.git ] ++ extraRuntimePackages;
-              in if obBinaryPath == null then baseBins ++ [ obPkg ] else baseBins;
-
-            obPathExport = pkgs.lib.optionalString (obBinaryPath != null) ''
-              OB_BIN=${pkgs.lib.escapeShellArg obBinaryPath}
-              export PATH="$(dirname "$OB_BIN"):$PATH"
-            '';
-
-            realBinary = pkgs.writeShellScriptBin "mcp-obelisk-real" ''
-              export OBELISK_SKIP_UPDATE_CHECK=1
-              export PATH=${pkgs.lib.makeBinPath runtimeBins}:$PATH
-              ${obPathExport}
-              exec ${staticPkg}/bin/mcp-obelisk "$@"
-            '';
-
-            shellTarget = if shell == null then null else (
-              let
-                uri = if shell ? uri then toString shell.uri else throw "mkMcpObelisk: shell.uri required when shell is set";
-                attrSuffix = if shell ? attr then "#${shell.attr}" else "";
-              in "${uri}${attrSuffix}"
-            );
-
-            nixExtraArgs = if shell == null then [] else pkgs.lib.optionals (shell ? extraArgs) shell.extraArgs;
-
-            escapedExtraArgs = if shell == null then "" else pkgs.lib.concatStringsSep " " (map pkgs.lib.escapeShellArg nixExtraArgs);
-            extraArgsSegment = if shell == null || nixExtraArgs == [] then "" else "${escapedExtraArgs} ";
-
-            launchScript = if shellTarget == null then ''
-              exec ${realBinary}/bin/mcp-obelisk-real "$@"
-            '' else ''
-              exec ${pkgs.nix}/bin/nix ${extraArgsSegment}develop ${pkgs.lib.escapeShellArg shellTarget} --command ${realBinary}/bin/mcp-obelisk-real "$@"
-            '';
-
-          in
-          pkgs.writeShellScriptBin "mcp-obelisk" launchScript;
       };
 
       devShells = forEachSystem (
@@ -243,7 +141,7 @@
                   pkgs.ghcid
                   # Add mcp-ghcid using the same GHC version as our Haskell development
                   (self.lib.mkMcpGhcid {
-                    inherit system;
+                    inherit system nixpkgs;
                     ghcid = pkgs.ghcid;
                     shell = {
                       uri = self.outPath;

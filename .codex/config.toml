@@ -11,10 +11,6 @@ wire_api = "responses"
 command = "nix"
 args = ["run", ".#mcp-ghcid", "--", "--log-level", "debug"]
 
-[mcp_servers.obelisk]
-command = "nix"
-args = ["run", ".#mcp-obelisk", "--", "--log-level", "debug"]
-
 # OpenAI via Responses API (used for GPT-5)
 [model_providers.openai]
 name = "OpenAI"

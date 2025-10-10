@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module MCP.SDK.Server.Auth where
+module MCP.SDK.Server.Auth
+  ( AuthProvider (..)
+  ) where
 
 import Data.Text (Text)
 import MCP.SDK.Error (MCPError)

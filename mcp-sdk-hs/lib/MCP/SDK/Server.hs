@@ -9,17 +9,54 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
-module MCP.SDK.Server where
+module MCP.SDK.Server
+  ( newMCPServer,
+    defaultServerConfig,
+    logDebugS,
+    logInfoS,
+    logWarnS,
+    logErrorS,
+    runServer,
+    runServerLoop,
+    messageLoop,
+    handleIncomingServerMessage,
+    handleRequest,
+    sendResponse,
+    handleNotification,
+    handleInitialize,
+    handleToolsListRequest,
+    handleToolsCallRequest,
+    handleResourcesListRequest,
+    handleResourcesReadRequest,
+    handlePromptsListRequest,
+    handlePromptsGetRequest,
+    handlePingRequest,
+    handleCompleteRequest,
+    getServerState,
+    errorToJSONRPCError,
+    closeServer,
+    isServerReady,
+    ServerBuilder (..),
+    buildServer,
+    withServerTransport,
+    withServerInfo,
+    withServerCapabilities,
+    withServerHandlers,
+    withServerConfig,
+    finalizeServer,
+    defaultServerCapabilities,
+    defaultServerHandlers
+  )
+where
 
 import Control.Concurrent.STM (atomically, newTVarIO, putTMVar, readTVar, readTVarIO, writeTVar)
-import Control.Exception.Safe (bracket, catch, finally)
+import Control.Exception.Safe (bracket, catch)
 import Control.Monad (forever, unless, when)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Logger (MonadLogger, logDebugN, logErrorN, logInfoN, logWarnN)
-import Control.Monad.Reader (MonadReader, ask, asks)
-import Data.Aeson (Object, Result (..), ToJSON, Value, fromJSON, toJSON)
+import Control.Monad.Logger (logDebugN, logErrorN, logInfoN, logWarnN)
+import Control.Monad.Reader (ask, asks)
+import Data.Aeson (Result (..), ToJSON, Value, fromJSON, toJSON)
 import qualified Data.Aeson as Aeson
-import Data.Foldable (find)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -280,7 +317,7 @@ handleToolsListRequest params = do
     ServerReady _ _ -> do
       case fromJSON params of
         Aeson.Error msg -> return $ Left $ ParseError $ T.pack msg
-        Success (ToolsListRequest cursor) -> do
+        Success (ToolsListRequest _cursor) -> do
           logDebugS "Handling tools/list request"
           ctx <- asks serverContext
           -- TODO: Implement pagination using the cursor
@@ -330,7 +367,7 @@ handleResourcesListRequest params = do
     ServerReady _ _ -> do
       case fromJSON params of
         Aeson.Error msg -> return $ Left $ ParseError $ T.pack msg
-        Success (ResourcesListRequest cursor) -> do
+        Success (ResourcesListRequest _cursor) -> do
           logDebugS "Handling resources/list request"
           ctx <- asks serverContext
           -- TODO: Implement pagination using the cursor
@@ -412,7 +449,7 @@ handlePromptsListRequest params = do
     ServerReady _ _ -> do
       case fromJSON params of
         Aeson.Error msg -> return $ Left $ ParseError $ T.pack msg
-        Success (PromptsListRequest cursor) -> do
+        Success (PromptsListRequest _cursor) -> do
           logDebugS "Handling prompts/list request"
           ctx <- asks serverContext
           -- TODO: Implement pagination using the cursor
@@ -435,7 +472,7 @@ handlePromptsGetRequest params = do
     ServerReady _ _ -> do
       case fromJSON params of
         Aeson.Error msg -> return $ Left $ ParseError $ T.pack msg
-        Success (PromptsGetRequest name args) -> do
+        Success (PromptsGetRequest name _args) -> do
           logDebugS $ "Handling prompts/get request for: " <> name
           ctx <- asks serverContext
           promptsMap <- liftIO $ readTVarIO (scPrompts ctx)

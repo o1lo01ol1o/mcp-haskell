@@ -28,12 +28,10 @@ module GHCID.ResourceManager
 
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Data.List (sortBy)
-import Control.Exception (Exception, SomeException, bracket, bracket_, finally, onException, throwIO, try, mask_)
-import Control.Monad (void, when)
+import Control.Exception (SomeException, bracket, bracket_, finally, onException, try)
+import Control.Monad (void)
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime, getCurrentTime, diffUTCTime)
 import System.Timeout (timeout)
 
 -- Internal imports
@@ -87,7 +85,7 @@ withGHCIDProcess registry cabalURI workDir action = do
     (startGHCIDProcess registry cabalURI workDir Nothing [])
     (\handleResult -> case handleResult of
       Left _ -> return () -- Nothing to cleanup if start failed
-      Right handle -> void $ stopGHCIDProcess registry cabalURI)
+      Right _ -> void $ stopGHCIDProcess registry cabalURI)
     (\handleResult -> case handleResult of
       Left err -> return $ Left err
       Right handle -> fmap Right $ action handle)
@@ -202,80 +200,9 @@ cleanupResource ResourceCleanup{..} = do
       logInfo $ "Successfully cleaned up resource: " <> cleanupName
       return $ Right ()
 
--- | Register a cleanup action (for complex resource management)
 registerCleanup :: TVar [ResourceCleanup] -> ResourceCleanup -> STM ()
 registerCleanup cleanupVar cleanup = do
   cleanups <- readTVar cleanupVar
   writeTVar cleanupVar (cleanup : cleanups)
-
--- | Execute all registered cleanups in priority order
-executeCleanups :: TVar [ResourceCleanup] -> IO [Either Text ()]
-executeCleanups cleanupVar = do
-  cleanups <- readTVarIO cleanupVar
-  let sortedCleanups = sortBy (\a b -> compare (cleanupPriority a) (cleanupPriority b)) cleanups
-  mapM cleanupResource sortedCleanups
-  where
-    sortBy = Data.List.sortBy
-
--- | Advanced resource management with multiple cleanup stages
-withManagedResources :: [(Text, IO a, a -> IO ())] 
-                     -> ([a] -> IO b) 
-                     -> IO (Either Text b)
-withManagedResources resources action = do
-  result <- try @SomeException $ withResourcesInternal resources []
-  case result of
-    Left ex -> return $ Left $ "Resource management error: " <> T.pack (show ex)
-    Right res -> return $ Right res
-  where
-    withResourcesInternal [] acquired = action (reverse acquired)
-    withResourcesInternal ((name, acquire, cleanup):rest) acquired = bracket
-      (do
-        logInfo $ "Acquiring resource: " <> name
-        acquire)
-      (\resource -> do
-        logInfo $ "Cleaning up resource: " <> name
-        void $ try @SomeException $ cleanup resource)
-      (\resource -> withResourcesInternal rest (resource:acquired))
-
--- | Graceful shutdown with timeout
-gracefulShutdown :: Int -> IO () -> IO () -> IO ()
-gracefulShutdown timeoutSecs gracefulAction forceAction = do
-  logInfo $ "Starting graceful shutdown (timeout: " <> T.pack (show timeoutSecs) <> "s)"
-  result <- timeout (timeoutSecs * 1000000) gracefulAction
-  case result of
-    Nothing -> do
-      logWarn "Graceful shutdown timed out, forcing shutdown"
-      forceAction
-    Just _ -> 
-      logInfo "Graceful shutdown completed successfully"
-
--- | Resource lifecycle tracking
-data ResourceLifecycle = ResourceLifecycle
-  { resourceId :: Text
-  , resourceAcquiredAt :: UTCTime
-  , resourceCleanupTimeout :: Int
-  }
-
--- | Track resource lifetime
-withResourceTracking :: Text 
-                     -> Int 
-                     -> IO a 
-                     -> (a -> IO ()) 
-                     -> (a -> IO b) 
-                     -> IO (Either Text b)
-withResourceTracking resourceId timeoutSecs acquire cleanup action = do
-  startTime <- getCurrentTime
-  let lifecycle = ResourceLifecycle resourceId startTime timeoutSecs
-  
-  logInfo $ "Acquiring tracked resource: " <> resourceId
-  result <- try @SomeException $ bracket acquire cleanup action
-  
-  endTime <- getCurrentTime
-  let duration = diffUTCTime endTime startTime
-  logInfo $ "Resource " <> resourceId <> " lifecycle: " <> T.pack (show duration)
-  
-  case result of
-    Left ex -> return $ Left $ "Tracked resource error: " <> T.pack (show ex)
-    Right res -> return $ Right res
 
 -- Helper for sorting by priority

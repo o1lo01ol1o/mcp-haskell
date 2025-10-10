@@ -7,11 +7,37 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
-module MCP.SDK.Client where
+module MCP.SDK.Client
+  ( MCPClient (..),
+    ClientState (..),
+    newMCPClient,
+    initializeClient,
+    closeClient,
+    isClientReady,
+    sendRequestInternal,
+    decodeRequestResponse,
+    getMethodFromRequest,
+    generateUniqueRequestId,
+    listTools,
+    callTool,
+    listResources,
+    readResource,
+    listPrompts,
+    getPrompt,
+    pingServer,
+    ClientBuilder (..),
+    buildClient,
+    withTransport,
+    withClientInfo,
+    withCapabilities,
+    withTimeout,
+    finalizeClient,
+    defaultCapabilities
+  )
+where
 
 import Control.Concurrent.STM
-import Control.Monad (when)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (Result (..), ToJSON, Value, fromJSON)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -39,7 +65,7 @@ data ClientState
   deriving (Eq, Show)
 
 -- | Create a new MCP client
-newMCPClient :: (Transport t) => t -> ClientInfo -> Capabilities -> IO (MCPClient t)
+newMCPClient :: t -> ClientInfo -> Capabilities -> IO (MCPClient t)
 newMCPClient transport info caps = do
   state <- newTVarIO Uninitialized
   return
@@ -69,7 +95,6 @@ initializeClient client = do
     _ -> do
       atomically $ writeTVar (clientState client) Initializing
 
-      let initReq = InitializeRequest "2024-11-05" (clientCapabilities client) (clientInfo client)
       result <- case makeInitializeRequest "2024-11-05" (clientCapabilities client) (clientInfo client) of
         Left err -> return $ Left err
         Right req -> sendRequestInternal client defaultContext req
@@ -104,7 +129,7 @@ sendRequestInternal ::
   RequestContext ->
   MCPRequest m ->
   IO (Either MCPError (ResponseType m))
-sendRequestInternal client ctx request = do
+sendRequestInternal client _ctx request = do
   -- Generate request ID
   reqId <- generateUniqueRequestId
 
@@ -137,6 +162,9 @@ decodeRequestResponse req resp = case req of
   PromptsGetReq _ -> decodeResponse @'PromptsGet PromptsGet resp
   PromptsListReq _ -> decodeResponse @'PromptsList PromptsList resp
   PingReq _ -> decodeResponse @'Ping Ping resp
+  CompleteReq _ -> decodeResponse @'Complete Complete resp
+  SamplingCreateMessageReq _ -> decodeResponse @'SamplingCreateMessage SamplingCreateMessage resp
+  ElicitationCreateReq _ -> decodeResponse @'ElicitationCreate ElicitationCreate resp
 
 -- | Helper to extract method from GADT request
 getMethodFromRequest :: MCPRequest m -> Method
@@ -148,6 +176,9 @@ getMethodFromRequest (ResourcesReadReq _) = ResourcesRead
 getMethodFromRequest (PromptsGetReq _) = PromptsGet
 getMethodFromRequest (PromptsListReq _) = PromptsList
 getMethodFromRequest (PingReq _) = Ping
+getMethodFromRequest (CompleteReq _) = Complete
+getMethodFromRequest (SamplingCreateMessageReq _) = SamplingCreateMessage
+getMethodFromRequest (ElicitationCreateReq _) = ElicitationCreate
 
 -- | Generate unique request ID
 generateUniqueRequestId :: IO RequestId
@@ -257,7 +288,7 @@ withTimeout :: Int -> ClientBuilder t -> ClientBuilder t
 withTimeout timeout builder = builder {cbTimeout = Just timeout}
 
 -- | Finalize client creation
-finalizeClient :: (Transport t) => ClientBuilder t -> IO (Either MCPError (MCPClient t))
+finalizeClient :: ClientBuilder t -> IO (Either MCPError (MCPClient t))
 finalizeClient ClientBuilder {..} = do
   transport <-
     maybe

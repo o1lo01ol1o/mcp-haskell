@@ -12,21 +12,18 @@ where
 
 import Control.Concurrent.Async (async, cancel)
 import Control.Concurrent.STM
-import Control.Exception (IOException, catch, try)
-import Control.Monad (forever, void, when)
-import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Exception (IOException, try)
+import Control.Monad (forever, when)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (eitherDecode, encode)
-import Data.ByteString.Lazy (ByteString)
-import qualified Data.ByteString.Lazy as LBS
 import qualified Data.ByteString.Lazy.Char8 as L8
 import Data.List (isPrefixOf)
-import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import MCP.SDK.Error
+import MCP.SDK.Logging (logDebug, logError)
 import MCP.SDK.Protocol
 import MCP.SDK.Transport
-import MCP.SDK.Logging (logDebug, logError)
 import System.IO (Handle, hFlush, hGetLine, hIsEOF, stdin, stdout)
 
 -- | Stdio transport for MCP communication
@@ -48,15 +45,6 @@ newStdioTransport = newStdioTransportWithHandles stdin stdout
 -- | Alias for compatibility with server examples
 createStdioTransport :: Handle -> Handle -> IO StdioTransport
 createStdioTransport = newStdioTransportWithHandles
-
--- | Default transport configuration
-defaultTransportConfig :: TransportConfig
-defaultTransportConfig =
-  TransportConfig
-    { transportTimeout = 30,
-      transportBufferSize = 8192,
-      transportRetries = 3
-    }
 
 -- | Create a stdio transport with custom handles
 newStdioTransportWithHandles :: Handle -> Handle -> IO StdioTransport
@@ -80,7 +68,7 @@ newStdioTransportWithHandles input output = do
 
 -- | Start the background message reader thread
 startMessageReader :: StdioTransport -> IO ()
-startMessageReader transport@StdioTransport {..} = do
+startMessageReader StdioTransport {..} = do
   readerAction <- async $ forever $ do
     connected <- readTVarIO stConnected
     when connected $ do
@@ -138,13 +126,13 @@ writeMessage handle msg = do
     Right _ -> return $ Right ()
 
 instance Transport StdioTransport where
-  sendMessage transport@StdioTransport {..} msg = liftIO $ do
+  sendMessage StdioTransport {..} msg = liftIO $ do
     connected <- readTVarIO stConnected
     if connected
       then writeMessage stOutput msg
       else return $ Left $ TransportError "Transport not connected"
 
-  receiveMessage transport@StdioTransport {..} = liftIO $ do
+  receiveMessage StdioTransport {..} = liftIO $ do
     connected <- readTVarIO stConnected
     if connected
       then do
@@ -152,7 +140,7 @@ instance Transport StdioTransport where
         return $ Right result
       else return $ Left $ TransportError "Transport not connected"
 
-  closeTransport transport@StdioTransport {..} = liftIO $ do
+  closeTransport StdioTransport {..} = liftIO $ do
     -- Mark as disconnected
     atomically $ writeTVar stConnected False
 
@@ -171,4 +159,4 @@ instance Transport StdioTransport where
           _ <- readTBQueue stMessageQueue
           return ()
 
-  isConnected transport@StdioTransport {..} = liftIO $ readTVarIO stConnected
+  isConnected StdioTransport {..} = liftIO $ readTVarIO stConnected

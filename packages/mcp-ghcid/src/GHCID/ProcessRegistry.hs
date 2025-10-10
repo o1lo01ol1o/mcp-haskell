@@ -44,7 +44,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.STM
 import Control.Exception (SomeException, fromException, onException, throwIO, try)
 import Control.Monad (void, when)
-import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.:?), (.=))
+import Data.Aeson (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
 import Data.Function ((&))
 -- STM containers
 
@@ -59,11 +59,9 @@ import Text.Read (readMaybe)
 import qualified ListT
 -- Common imports
 import Process.Signals (SignalInfo)
-import qualified StmContainers.Bimap as StmBimap
 import qualified StmContainers.Map as StmMap
 import qualified StmContainers.Set as StmSet
-import System.Exit (ExitCode (..))
-import System.IO (Handle, hClose, hFlush)
+import System.IO (Handle)
 import System.IO.Error (isEOFError)
 import System.Process.Typed
 import System.Timeout (timeout)
@@ -360,72 +358,72 @@ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
   let pid = fmap (CPid . fromIntegral) rawPid
 
   -- Create STM variables
-  (status, outputQueue, errorQueue, outputReader, errorReader, watchdogVar, healthVar, lastMsgVar) <- atomically $ do
+  (statusVar, outputQueue, errorQueue, outputReaderVar, errorReaderVar, watchdogVar, healthVar, lastMsgVar) <- atomically $ do
     s <- newTVar GHCIDStarting
     oq <- newTBQueue 10000 -- 10k line buffer
     eq <- newTBQueue 1000 -- 1k error buffer
-    or <- newTVar Nothing
-    er <- newTVar Nothing
+    outReaderVar <- newTVar Nothing
+    errReaderVar <- newTVar Nothing
     wd <- newTVar Nothing
     hv <- newTVar startTime
     lm <- newTVar (Just launchMessage)
-    return (s, oq, eq, or, er, wd, hv, lm)
+    return (s, oq, eq, outReaderVar, errReaderVar, wd, hv, lm)
 
-  let handle =
+  let ghcidHandle =
         GHCIDHandle
           { ghcidProcess = process,
             ghcidPid = pid,
-            ghcidStatus = status,
+            ghcidStatus = statusVar,
             ghcidOutput = outputQueue,
             ghcidErrors = errorQueue,
             ghcidStartTime = startTime,
             ghcidCabalURI = cabalURI,
             ghcidWorkDir = workDir,
             ghcidRegistryRef = registry,
-            ghcidOutputReader = outputReader,
-            ghcidErrorReader = errorReader,
+            ghcidOutputReader = outputReaderVar,
+            ghcidErrorReader = errorReaderVar,
             ghcidWatchdog = watchdogVar,
             ghcidHealthCheck = healthVar,
             ghcidLastMessage = lastMsgVar
           }
 
   let setup = do
-        outReader <- async $ outputReaderLoop handle (getStdout process)
-        errReader <- async $ errorReaderLoop handle (getStderr process)
-        watchdog <- async $ watchdogLoop handle
+        outReader <- async $ outputReaderLoop ghcidHandle (getStdout process)
+        errReader <- async $ errorReaderLoop ghcidHandle (getStderr process)
+        watchdog <- async $ watchdogLoop ghcidHandle
         now <- getCurrentTime
 
         atomically $ do
-          writeTVar (ghcidOutputReader handle) (Just outReader)
-          writeTVar (ghcidErrorReader handle) (Just errReader)
-          writeTVar (ghcidWatchdog handle) (Just watchdog)
-          writeTVar (ghcidHealthCheck handle) now
-          writeTVar (ghcidStatus handle) GHCIDStarting
+          writeTVar (ghcidOutputReader ghcidHandle) (Just outReader)
+          writeTVar (ghcidErrorReader ghcidHandle) (Just errReader)
+          writeTVar (ghcidWatchdog ghcidHandle) (Just watchdog)
+          writeTVar (ghcidHealthCheck ghcidHandle) now
+          writeTVar (ghcidStatus ghcidHandle) GHCIDStarting
 
-        return handle
+        return ghcidHandle
 
-      cleanup = cleanupGHCIDHandle handle
+      cleanup = cleanupGHCIDHandle ghcidHandle
 
-  handle <- setup `onException` cleanup
+  ghcidHandle' <- setup `onException` cleanup
 
-  earlyExit <- waitForEarlyExit process handle
+  earlyExit <- waitForEarlyExit process ghcidHandle'
   case earlyExit of
     Nothing -> do
-      status <- readTVarIO (ghcidStatus handle)
-      case status of
+      currentStatus <- readTVarIO (ghcidStatus ghcidHandle')
+      case currentStatus of
         GHCIDError errTxt -> do
           logError $ "ghcid reported startup error for " <> getCabalURI cabalURI <> ": " <> errTxt
           cleanup
           throwIO (userError (T.unpack errTxt))
-        _ -> return handle
+        _ -> return ghcidHandle'
     Just code -> do
-      (outLines, errLines) <- atomically $ drainQueues handle
+      (outLines, errLines) <- atomically $ drainQueues ghcidHandle'
       let decoratedErrs = map ("[stderr] " <>) errLines
           combinedLines = outLines ++ decoratedErrs
           combinedLog = T.unlines combinedLines
           exitMsg = "ghcid exited during startup with " <> T.pack (show code)
           fullMsg = if T.null combinedLog then exitMsg else exitMsg <> "\n" <> combinedLog
-      atomically $ writeTVar (ghcidStatus handle) (GHCIDError fullMsg)
+      atomically $ writeTVar (ghcidStatus ghcidHandle') (GHCIDError fullMsg)
       logError $ "ghcid failed to start for " <> getCabalURI cabalURI <> ": " <> fullMsg
       cleanup
       throwIO (userError (T.unpack fullMsg))
@@ -443,22 +441,22 @@ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
     escapeChar '\\' = "\\\\"
     escapeChar c = [c]
 
-    waitForEarlyExit proc ghcidHandle = poll 10
+    waitForEarlyExit processHandle ghcidHandle = retryPoll (10 :: Int)
       where
-        poll 0 = pure Nothing
-        poll n = do
-          exitCode <- getExitCode proc
+        retryPoll 0 = pure Nothing
+        retryPoll n = do
+          exitCode <- getExitCode processHandle
           case exitCode of
             Just code -> pure (Just code)
             Nothing -> do
-              status <- readTVarIO (ghcidStatus ghcidHandle)
-              case status of
+              ghcidStatusValue <- readTVarIO (ghcidStatus ghcidHandle)
+              case ghcidStatusValue of
                 GHCIDStarting -> do
                   threadDelay 100000 -- 100ms
-                  poll (n - 1)
+                  retryPoll (n - 1)
                 GHCIDError _ -> do
                   threadDelay 100000
-                  poll (n - 1)
+                  retryPoll (n - 1)
                 _ -> pure Nothing
 
 -- | Update the heartbeat timestamp for a handle to indicate activity.
@@ -492,7 +490,7 @@ terminateProcessTree GHCIDHandle {..} =
 
 -- | Watchdog loop that terminates ghcid processes when their heartbeat goes stale.
 watchdogLoop :: GHCIDHandle -> IO ()
-watchdogLoop handle@GHCIDHandle {..} = loop
+watchdogLoop GHCIDHandle {..} = loop
   where
     loop = do
       threadDelay watchdogCheckIntervalMicros
@@ -683,7 +681,7 @@ sanitizeLine :: Text -> Text
 sanitizeLine = T.stripEnd . T.filter (\c -> c == '\t' || c >= ' ')
 
 updateStatusFromStdout :: GHCIDHandle -> Text -> IO ()
-updateStatusFromStdout handle@GHCIDHandle {..} line =
+updateStatusFromStdout GHCIDHandle {..} line =
   when (not $ T.null line) $
     atomically $ do
       prev <- readTVar ghcidStatus

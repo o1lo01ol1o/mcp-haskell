@@ -27,12 +27,11 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
-import Data.Time (defaultTimeLocale, formatTime, getCurrentTime)
+import Data.Time (getCurrentTime)
 import qualified Data.Vector as V
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeExtension, takeFileName, (</>))
-import System.IO.Error (ioError, userError)
-import GHCID.Filter (FilterRequest (..), applyShellFilter)
+import GHCID.Filter (applyShellFilter)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
 import qualified GHCID.ProcessRegistry as PR
 import MCP.SDK.Types (Content (TextContent), ToolCallResult (..), ToolsCallRequest (..), ToolsCallResponse (..))
@@ -344,10 +343,10 @@ getGHCIDMessages registry args = do
               -- Apply filtering if requested
               filteredMessages <- case filterReq of
                 Nothing -> return messages
-                Just filter -> do
-                  filtered <- applyShellFilter (T.unlines messages) filter
+                Just filterSpec -> do
+                  filtered <- applyShellFilter (T.unlines messages) filterSpec
                   case filtered of
-                    Left err -> return []
+                    Left _ -> return []
                     Right output -> return $ T.lines output
 
               -- Limit count if requested

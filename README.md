@@ -8,7 +8,6 @@ This project provides two main MCP servers:
 
 - **mcp-hls**: Integration with Haskell Language Server (HLS)
 - **mcp-ghcid**: Integration with GHCID for continuous compilation
-- **mcp-obelisk**: Integration with `ob watch` for Obelisk applications
 
 ## Quick Start
 
@@ -40,8 +39,8 @@ This project provides two main MCP servers:
     in {
       packages.${system} = {
         # Create mcp-ghcid with your project's ghcid
-        mcp-ghcid = mcp-hls.lib.mkMcpGhcid { 
-          inherit system;
+        mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
+          inherit system nixpkgs;
           ghcid = my-ghcid; 
         };
       };
@@ -70,9 +69,9 @@ This project provides two main MCP servers:
       
     in {
       packages.${system} = {
-        mcp-ghcid = mcp-hls.lib.mkMcpGhcid { 
-          inherit system;
-          ghcid = my-ghcid; 
+        mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
+          inherit system nixpkgs;
+          ghcid = my-ghcid;
         };
         
         # Make it your default package
@@ -146,44 +145,48 @@ When starting, include an optional `component` field to target a specific Cabal 
 
 Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request). Responses include `"output"` (full text) and `"lines"` (array of individual lines) so downstream tools can display or post-process easily.
 
-### mcp-obelisk
+#### Using mcp-ghcid in downstream projects
 
-An MCP server that wraps `ob watch` for Obelisk projects.
+- **Expose a package**: add `mcp-hls` as a flake input and call `lib.mkMcpGhcid`, passing the same `nixpkgs` input and `ghcid` derivation your project already uses. This keeps ghcid and your build on the identical GHC toolchain.
 
-**Features:**
-- Start/stop/restart `ob watch` processes (restarts are implicit via `obelisk-start`)
-- Structured status reporting (`running`, `starting`, `errored`, etc.)
-- Log streaming with the same filtering options as `mcp-ghcid`
-- Instructional guidance returned during `initialize`
+  ```nix
+  {
+    inputs = {
+      mcp-hls.url = "github:your-org/mcp-hls";
+      nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    };
 
-**Available MCP Tools:**
-- `obelisk-start` – Start or restart `ob watch`
-- `obelisk-stop` – Stop `ob watch`
-- `obelisk-status` – Get current status (including last log line)
-- `obelisk-messages` – Fetch recent log output (supports filters)
-- `obelisk-list` – List active Obelisk projects managed by the server
-
-**Message filtering**
-
-`obelisk-messages` exposes the same filter schema as `ghcid-messages`. Example request:
-
-```jsonc
-{
-  "jsonrpc": "2.0",
-  "id": 12,
-  "method": "tools/call",
-  "params": {
-    "name": "obelisk-messages",
-    "arguments": {
-      "projectPath": "/path/to/obelisk-app",
-      "limit": 120,
-      "filter": { "tail": 20 }
-    }
+    outputs = { self, nixpkgs, mcp-hls }:
+      let
+        system = "x86_64-linux";
+        pkgs = import nixpkgs { inherit system; };
+        haskellPackages = pkgs.haskell.packages.ghc948; # match your toolchain
+      in {
+        packages.${system}.mcp-ghcid =
+          mcp-hls.lib.mkMcpGhcid {
+            inherit system nixpkgs;
+            ghcid = haskellPackages.ghcid;
+            # Optional: run inside your dev shell before launching the binary
+            shell = {
+              uri = ".";
+              attr = "runtime";
+              extraArgs = [ "--accept-flake-config" ];
+            };
+          };
+      };
   }
-}
-```
+  ```
 
-The response mirrors the `mcp-ghcid` format, returning both `output` and `lines` fields so clients can quickly surface relevant log fragments.
+- **Run the server**: build or run the package with `nix build .#mcp-ghcid` or `nix run .#mcp-ghcid -- --help`. The wrapper script (`mkMcpGhcid`) injects the provided `ghcid` onto `PATH` and, if `shell` is set, drops into the specified dev shell before starting the MCP server.
+- **Connect an MCP client**: configure your MCP tooling to launch the flake attribute. For example, a `.codex/config.toml` entry can mirror the one used in this repository:
+
+  ```toml
+  [mcp_servers.ghcid]
+  command = "nix"
+  args = ["run", "/path/to/your/project#mcp-ghcid", "--", "--log-level", "debug"]
+  ```
+
+- **Customize behaviour**: supply a JSON config via `--config path/to/config.json` to override defaults (e.g. `instructionsMessage`, `retentionPolicy`, `maxConcurrentProcesses`). The built-in auto-discovery falls back to the current working directory when no config file is provided.
 
 ### mcp-hls
 
@@ -221,7 +224,7 @@ packages/
 
 - `lib.mkMcpGhcid`: Function to create mcp-ghcid with provided ghcid
   ```nix
-  mkMcpGhcid :: { system :: String, ghcid :: Derivation } -> Derivation
+  mkMcpGhcid :: { system :: String, nixpkgs :: FlakeInput, ghcid :: Derivation } -> Derivation
   ```
 
 **Important**: This flake does NOT provide pre-built packages. You must use the library function with your own `ghcid` derivation to ensure GHC version compatibility.
@@ -247,6 +250,7 @@ Create a `flake.nix` in your Haskell project:
   outputs = { self, nixpkgs, mcp-hls }: {
     packages.x86_64-linux.mcp-ghcid = 
       mcp-hls.lib.mkMcpGhcid {
+        inherit nixpkgs;
         system = "x86_64-linux";
         ghcid = nixpkgs.legacyPackages.x86_64-linux.haskell.packages.ghc948.ghcid;
       };
