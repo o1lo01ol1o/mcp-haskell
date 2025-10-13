@@ -40,8 +40,8 @@ This project provides two main MCP servers:
       packages.${system} = {
         # Create mcp-ghcid with your project's ghcid
         mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
-          inherit system nixpkgs;
-          ghcid = my-ghcid; 
+          inherit system;
+          ghcid = my-ghcid;
         };
       };
     };
@@ -70,7 +70,7 @@ This project provides two main MCP servers:
     in {
       packages.${system} = {
         mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
-          inherit system nixpkgs;
+          inherit system;
           ghcid = my-ghcid;
         };
         
@@ -147,7 +147,7 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 
 #### Using mcp-ghcid in downstream projects
 
-- **Expose a package**: add `mcp-hls` as a flake input and call `lib.mkMcpGhcid`, passing the same `nixpkgs` input and `ghcid` derivation your project already uses. This keeps ghcid and your build on the identical GHC toolchain.
+- **Expose a package**: add `mcp-hls` as a flake input and call `lib.mkMcpGhcid` with the `ghcid` derivation your project already uses. This keeps ghcid and your build on the identical GHC toolchain while always building the server with the nixpkgs pin from `mcp-hls`.
 
   ```nix
   {
@@ -164,20 +164,27 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
       in {
         packages.${system}.mcp-ghcid =
           mcp-hls.lib.mkMcpGhcid {
-            inherit system nixpkgs;
+            inherit system;
             ghcid = haskellPackages.ghcid;
-            # Optional: run inside your dev shell before launching the binary
+            # Optional: extend the runtime environment for the server
             shell = {
-              uri = ".";
-              attr = "runtime";
-              extraArgs = [ "--accept-flake-config" ];
+              packages = [
+                haskellPackages.ghc
+                pkgs.cabal-install
+                pkgs.nix
+              ];
+              env = {
+                GHCUP_USE_XDG = "1";
+              };
             };
           };
       };
   }
   ```
+  The helper always imports the `nixpkgs` pin from `mcp-hls`, then prepends the packages you provide to `PATH` and exports any `shell.env` variables before starting the binary.
+  Use `shell.commands = ["source .envrc"]` if you need to run extra shell snippets prior to launching the server.
 
-- **Run the server**: build or run the package with `nix build .#mcp-ghcid` or `nix run .#mcp-ghcid -- --help`. The wrapper script (`mkMcpGhcid`) injects the provided `ghcid` onto `PATH` and, if `shell` is set, drops into the specified dev shell before starting the MCP server.
+- **Run the server**: build or run the package with `nix build .#mcp-ghcid` or `nix run .#mcp-ghcid -- --help`. The wrapper script (`mkMcpGhcid`) injects the provided `ghcid` onto `PATH` and, when `shell` is set, layers in those extra packages, environment exports, and optional `shell.commands` before launching the MCP server—no nested `nix develop` call required.
 - **Connect an MCP client**: configure your MCP tooling to launch the flake attribute. For example, a `.codex/config.toml` entry can mirror the one used in this repository:
 
   ```toml
@@ -224,7 +231,15 @@ packages/
 
 - `lib.mkMcpGhcid`: Function to create mcp-ghcid with provided ghcid
   ```nix
-  mkMcpGhcid :: { system :: String, nixpkgs :: FlakeInput, ghcid :: Derivation } -> Derivation
+  mkMcpGhcid :: {
+    system :: String,
+    ghcid :: Derivation,
+    shell ? {
+      packages ? [ Derivation ],
+      env ? AttrSet,
+      commands ? [ String ]
+    }
+  } -> Derivation
   ```
 
 **Important**: This flake does NOT provide pre-built packages. You must use the library function with your own `ghcid` derivation to ensure GHC version compatibility.
@@ -250,7 +265,6 @@ Create a `flake.nix` in your Haskell project:
   outputs = { self, nixpkgs, mcp-hls }: {
     packages.x86_64-linux.mcp-ghcid = 
       mcp-hls.lib.mkMcpGhcid {
-        inherit nixpkgs;
         system = "x86_64-linux";
         ghcid = nixpkgs.legacyPackages.x86_64-linux.haskell.packages.ghc948.ghcid;
       };

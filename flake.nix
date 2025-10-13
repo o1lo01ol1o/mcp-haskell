@@ -40,12 +40,14 @@
 
           # Provide mcp-ghcid as a convenient package using GHC 9.8.4
           mcp-ghcid = self.lib.mkMcpGhcid {
-            inherit system nixpkgs;
+            inherit system;
             ghcid = pkgs.ghcid;
             shell = {
-              uri = ".";
-              attr = "runtime";
-              extraArgs = [ "--accept-flake-config" ];
+              packages = [
+                pkgs.cabal-install
+                pkgs.nix
+                pkgs.haskell.packages.ghc948.ghc
+              ];
             };
           };
 
@@ -57,15 +59,22 @@
       # Library functions for creating mcp-ghcid with custom ghcid
       lib = {
         # Main function to create mcp-ghcid with a provided ghcid derivation
-        # Usage: mkMcpGhcid { system = "x86_64-linux"; nixpkgs = myNixpkgs; ghcid = myGhcidDerivation; shell = { uri = self.outPath; attr = "default"; }; }
+        # Usage: mkMcpGhcid {
+        #   system = "x86_64-linux";
+        #   ghcid = myGhcidDerivation;  # Server always builds with this flake's nixpkgs pin
+        #   shell = {
+        #     packages = [ myPkgs.ghc myPkgs.cabal-install ];
+        #     env = { SOME_VAR = "value" };      # optional
+        #     commands = [ "source my-env.sh" ]; # optional extra shell commands
+        #   };
+        # }
         mkMcpGhcid =
           { system
-          , nixpkgs
           , ghcid
           , shell ? null
           }:
           let
-            pkgs = import nixpkgs {
+            pkgs = import inputs.nixpkgs {
               inherit system;
               config.allowUnfree = true;
             };
@@ -84,31 +93,51 @@
 
             staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
 
-            realBinary = pkgs.writeShellScriptBin "mcp-ghcid-real" ''
-              export PATH=${pkgs.lib.makeBinPath [ ghcid ]}:$PATH
-              exec ${staticPkg}/bin/mcp-ghcid "$@"
-            '';
+            shellConfig =
+              if shell == null then { }
+              else if builtins.isAttrs shell then shell
+              else throw "mkMcpGhcid: shell must be an attribute set when provided";
 
-            shellTarget = if shell == null then null else (
-              let
-                uri = if shell ? uri then toString shell.uri else throw "mkMcpGhcid: shell.uri required when shell is set";
-                attrSuffix = if shell ? attr then "#${shell.attr}" else "";
-              in "${uri}${attrSuffix}"
-            );
+            toStringList = value:
+              if builtins.isNull value then [ ]
+              else if builtins.isList value then value
+              else if builtins.isString value then [ value ]
+              else throw "mkMcpGhcid: shell.commands must be a string or list of strings";
 
-            nixExtraArgs = if shell == null then [] else pkgs.lib.optionals (shell ? extraArgs) shell.extraArgs;
+            toPackageList = value:
+              if builtins.isNull value then [ ]
+              else if builtins.isList value then value
+              else [ value ];
 
-            escapedExtraArgs = if shell == null then "" else pkgs.lib.concatStringsSep " " (map pkgs.lib.escapeShellArg nixExtraArgs);
-            extraArgsSegment = if shell == null || nixExtraArgs == [] then "" else "${escapedExtraArgs} ";
+            shellPackages = toPackageList (shellConfig.packages or [ ]);
 
-            launchScript = if shellTarget == null then ''
-              exec ${realBinary}/bin/mcp-ghcid-real "$@"
-            '' else ''
-              exec ${pkgs.nix}/bin/nix ${extraArgsSegment}develop ${pkgs.lib.escapeShellArg shellTarget} --command ${realBinary}/bin/mcp-ghcid-real "$@"
-            '';
+            shellEnv = shellConfig.env or { };
+
+            shellCommands = toStringList (shellConfig.commands or [ ]);
+
+            runtimeInputs = pkgs.lib.unique (shellPackages ++ [ ghcid ]);
+
+            envLines =
+              pkgs.lib.mapAttrsToList
+                (name: value:
+                  ''export ${name}=${pkgs.lib.escapeShellArg (toString value)}'')
+                shellEnv;
+
+            scriptLines =
+              pkgs.lib.filter (line: line != "") (
+                envLines
+                ++ shellCommands
+                ++ [ ''exec ${staticPkg}/bin/mcp-ghcid "$@"'' ]
+              );
+
+            scriptBody = pkgs.lib.concatStringsSep "\n" scriptLines;
 
           in
-          pkgs.writeShellScriptBin "mcp-ghcid" launchScript;
+          pkgs.writeShellApplication {
+            name = "mcp-ghcid";
+            runtimeInputs = runtimeInputs;
+            text = scriptBody + "\n";
+          };
 
       };
 
@@ -141,12 +170,14 @@
                   pkgs.ghcid
                   # Add mcp-ghcid using the same GHC version as our Haskell development
                   (self.lib.mkMcpGhcid {
-                    inherit system nixpkgs;
+                    inherit system;
                     ghcid = pkgs.ghcid;
                     shell = {
-                      uri = self.outPath;
-                      attr = "devShell";
-                      extraArgs = [ "--accept-flake-config" ];
+                      packages = [
+                        pkgs.cabal-install
+                        pkgs.nix
+                        pkgs.haskell.packages.ghc948.ghc
+                      ];
                     };
                   })
                 ];
