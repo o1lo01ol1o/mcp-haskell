@@ -1,182 +1,97 @@
 # mcp-ghcid Obelisk Integration
 
-This document explains how the Plast Obelisk project layers the upstream [`mcp-haskell`](https://github.com/o1lo01ol1o/mcp-haskell) flake into its workflow so that the `mcp-ghcid` MCP server is available to local tooling and `.codex`. The integration is designed to reuse the existing Obelisk toolchain, keeping the server aligned with the same GHC, `ghcid`, and supporting packages that the project already relies on.
+This document explains how the `mcp-hls` repository exposes the `mcp-ghcid` MCP server after the split between `default.nix` and `flake.nix`. The goal is to keep the Obelisk project self-contained while still publishing convenient flake outputs for editors and tooling.
 
-At a high level the setup is powered by three parts:
+## Integration Overview
 
-1. A flake shim in `nix/flake.nix` that exposes `mcp-ghcid` based on the legacy `default.nix`.
-2. Additional logic in `default.nix` that imports the upstream flake, pulls in Obelisk’s packages, and adapts to the latest `mkMcpGhcid` API.
-3. A `.codex` entry that launches the flake output so editors can start the MCP server automatically.
+- `default.nix` is once again the canonical Obelisk entry point. It imports `.obelisk/impl`, defines the project packages and shells, and exports those results—nothing more.
+- `flake.nix` mirrors the legacy behaviour. It imports `default.nix` for each supported system, wires in the upstream `mcp-haskell` flake, and calls `mkMcpGhcid` to build the MCP server and related tools.
+- The flake redistributes those derivations as packages, apps, and dev shells so commands like `nix run .#mcp-ghcid` work out of the box.
 
-## Flake Shim (`nix/flake.nix`)
+> **Important:** Downstream Obelisk projects should import `default.nix`, not the flake output that exposes `mcp-ghcid`. The flake is a convenience layer around this repository; other projects should reuse the project definition exported by `default.nix` and provide their own MCP wiring if needed.
 
-The repository advertises `mcp-ghcid` through a lightweight shim at `nix/flake.nix`. The shim evaluates the existing `default.nix` for each supported system and mirrors those results into the flake’s packages, apps, and dev shells:
+## `default.nix` responsibilities
+
+`default.nix` now focuses exclusively on the Obelisk project:
+
+- Imports `.obelisk/impl` and constructs the `project` attribute with the usual overrides.
+- Exposes the project’s `packages`, `shells`, and other Obelisk-specific entry points.
+- Does **not** fetch or build `mcp-ghcid`, nor does it call `builtins.getFlake`. The file stays pure so downstream projects can include it without pulling additional infrastructure into their evaluation.
+
+This separation keeps the Obelisk build graph isolated, avoids implicit network fetches, and lets downstream users depend on the project definition without inheriting the MCP server by default.
+
+## `flake.nix` responsibilities
+
+`flake.nix` reintroduces the MCP integration on top of the clean `default.nix` interface.
+
+### Importing the project once
+
+For each supported system the flake:
+
+1. Imports its pinned `nixpkgs` to get the local toolchain.
+2. Imports `./default.nix` (passing the current system) to obtain the `project` attribute and its shells.
+3. Pulls in the upstream `mcp-haskell` flake via the `mcp-haskell` input.
+
+This ensures all project-specific knowledge lives in one place—`default.nix`—while the flake simply borrows those results.
+
+### Constructing `mcp-ghcid`
+
+The flake defines helpers such as `lib.mkMcpGhcid` that wrap the upstream `mcp-haskell` API. A typical call looks like:
 
 ```nix
-{
-  description = "Plast flake shim exposing mcp-ghcid from default.nix";
-
-  inputs = {
-    systems.url = "github:nix-systems/default";
-    mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell";
+self.lib.mkMcpGhcid {
+  inherit system;
+  ghcid = pkgs.ghcid;
+  shell = {
+    packages = [
+      # Reuse the compiler and tools exported by the project's Obelisk shell.
+      project.shells.ghcPackages.ghc
+      project.shells.ghcPackages.cabal-install
+    ];
   };
-
-  outputs = { self, systems, mcp-haskell, ... }:
-    let
-      evaluatedSystems = map (system: {
-        inherit system;
-        result = builtins.tryEval (import ../default.nix {
-          inherit system;
-          mcpFlake = mcp-haskell;
-        });
-      }) (import systems);
-      supportedSystems = builtins.filter (entry: entry.result.success) evaluatedSystems;
-      forEachSystem = f: builtins.listToAttrs (map (entry: {
-        name = entry.system;
-        value = f entry.system entry.result.value;
-      }) supportedSystems);
-    in {
-      packages = forEachSystem (_: project: {
-        mcpGhcid = project.mcpGhcid;
-        "mcp-ghcid" = project.mcpGhcid;
-        default = project.mcpGhcid;
-      });
-      apps = forEachSystem (_: project: let drv = project.mcpGhcid; in {
-        mcpGhcid = { type = "app"; program = "${drv}/bin/mcp-ghcid"; };
-        "mcp-ghcid" = { type = "app"; program = "${drv}/bin/mcp-ghcid"; };
-        default = { type = "app"; program = "${drv}/bin/mcp-ghcid"; };
-      });
-      devShells = forEachSystem (_: project: {
-        ghc = project.shells.ghc;
-        default = project.shells.ghc;
-      });
-    };
 }
 ```
 
-Key details:
+Key points:
 
-- The shim delegates back to `default.nix`, which already understands how to build the Obelisk shells. The shim never evaluates the upstream flake directly.
-- Passing `mcpFlake = mcp-haskell` ensures the upstream flake is reused without fetching it twice.
-- The `apps` outputs mirror the `packages` so `nix run ./nix#mcp-ghcid` works immediately, without additional wrappers.
+- The project’s dev shell from `default.nix` provides the authoritative GHC and supporting tools.
+- The flake reuses those packages so `mcp-ghcid` runs with the same compiler, `ghcid`, and `cabal-install` as the rest of the project.
+- Adjust the attribute paths (`project.shells.ghcPackages.*` in the example above) to match the names your Obelisk project exports; the important part is reusing the same toolchain.
+- Outputs are re-exported under `packages`, `apps`, and `devShells`, with `mcp-ghcid` usually set as the default package/app for convenience.
 
-## Upstream Pinning (`default.nix`)
+### Dev shell wiring
 
-`default.nix` now handles importing the upstream flake, pinning its revision, and adapting Obelisk’s packages to the latest `mkMcpGhcid` API. The relevant definitions live near `default.nix:89-127`.
+The flake also sets the default `devShell` to the plain Obelisk shell from `default.nix`. This keeps local development focused on the same environment whether it is entered through `nix develop`, Obelisk tooling, or the MCP integrations.
 
-### Pinning the Flake
+## Guidance for downstream Obelisk projects
 
-```nix
-resolvedMcpFlake = if mcpFlake != null then
-  mcpFlake
-else
-  builtins.getFlake
-  "github:o1lo01ol1o/mcp-haskell/78ed451cdb265844c79a237729cb92b24b4695ce";
-```
+- Import `default.nix` to obtain the Obelisk project definition. This file is intentionally free of MCP-specific logic so it can be vendored or overridden without pulling in extra dependencies.
+- Avoid importing this repository’s `flake.nix` just to obtain the `mcp-ghcid` attribute. Doing so would reintroduce the tight coupling we removed and would make your project depend on the MCP wiring decisions made here.
+- If you need `mcp-ghcid` in your own flake, copy the pattern: import your project’s `default.nix`, bring in `mcp-haskell`, and call `mkMcpGhcid` with the packages from your Obelisk shell.
 
-The function accepts an `mcpFlake` override (used by `nix/flake.nix`) but otherwise falls back to a locked commit hash. The same revision is mirrored in `nix/flake.lock`, keeping the project’s lock files aligned when upstream is bumped.
+## `.codex` integration
 
-### Matching the Obelisk Toolchain
-
-The latest `mkMcpGhcid` expects a `shell.packages` field. Because Obelisk already defines the authoritative toolchain, the integration reuses those packages so `mcp-ghcid` runs with the same GHC (`ghc8107` today), `ghcid`, and `cabal-install` that developers already use:
-
-```nix
-cabalInstallPkg =
-  if obelisk.nixpkgs ? cabal-install then
-    obelisk.nixpkgs.cabal-install
-  else if obelisk.nixpkgs.haskellPackages ? cabal-install then
-    obelisk.nixpkgs.haskellPackages.cabal-install
-  else
-    throw "mcpGhcid shim: expected cabal-install in obelisk nixpkgs";
-
-ghcCompilerPkg =
-  if obelisk.nixpkgs.haskellPackages ? ghc then
-    obelisk.nixpkgs.haskellPackages.ghc
-  else if obelisk.nixpkgs.haskell.compiler ? ghc8107 then
-    obelisk.nixpkgs.haskell.compiler.ghc8107
-  else if obelisk.nixpkgs ? ghc then
-    obelisk.nixpkgs.ghc
-  else
-    throw "mcpGhcid shim: expected ghc compiler in obelisk nixpkgs";
-```
-
-These helpers are defensive: they look through the common attribute paths used by different Obelisk snapshots and produce a clear error if either `cabal-install` or `ghc` cannot be located.
-
-### Constructing `mcpGhcid`
-
-```nix
-mcpGhcid = resolvedMcpFlake.lib.mkMcpGhcid {
-  inherit system;
-  ghcid = if obelisk.nixpkgs ? ghcid then
-    obelisk.nixpkgs.ghcid
-  else if obelisk.nixpkgs.haskellPackages ? ghcid then
-    obelisk.nixpkgs.haskellPackages.ghcid
-  else
-    throw "mcpGhcid shim: expected ghcid in obelisk nixpkgs";
-  shell = {
-    packages = [
-      ghcCompilerPkg
-      cabalInstallPkg
-    ];
-  };
-};
-```
-
-Passing the Obelisk-managed `ghcid`, `ghc`, and `cabal-install` guarantees that the server launches with the exact toolchain the project already uses. The derivation is re-exported under both `mcpGhcid` and `"mcp-ghcid"`, matching the attribute names that downstream consumers (including the flake shim) expect.
-
-## `.codex` Integration
-
-With the flake outputs in place, the `.codex` configuration at `.codex/config.toml` delegates server startup to `nix run`, letting Codex reuse the same entry point as manual invocations:
+`.codex/config.toml` continues to launch the MCP server through the flake app:
 
 ```toml
-model = "gpt-5-codex"
-model_provider = "openai"
-
 [mcp_servers.ghcid]
 command = "nix"
-args = ["run", "./nix#mcp-ghcid"]
+args = ["run", ".#mcp-ghcid"]
 ```
 
-The server definition stays minimal on purpose—Codex appends `--` and any additional flags automatically. Because the app resolves to the same derivation exposed by `default.nix`, Codex shares the exact dependency stack used elsewhere in the project.
+Because the flake already includes the Obelisk toolchain, Codex shares the exact dependency stack used by manual invocations (`nix run .#mcp-ghcid`). Remember to set `CODEX_HOME=.codex` in your shell so Codex stores its state locally, and ensure `.codex/*` (except `config.toml`) is ignored by Git.
 
-Set `CODEX_HOME=.codex` when running the CLI (for example `export CODEX_HOME=.codex`) so Codex stores its state alongside the repository instead of in the global user directory.
+## Updating upstream revisions
 
-Because `.codex/` accumulates session history, logs, and credentials, ensure everything except `config.toml` is listed in `.gitignore` if it is not already:
+When `mcp-haskell` publishes a new revision:
 
-```
-.codex/*
-!.codex/config.toml
-```
-
-This keeps sensitive data out of version control while preserving the shared configuration file.
-
-## Using the Integration
-
-1. **Update the lock file** to pull the latest upstream changes when needed:
-   ```bash
-   nix flake update ./nix --update-input mcp-haskell
-   ```
-   Running the command inside `nix/` avoids rewriting unrelated top-level flakes.
-2. **Verify the build** by running the server manually:
-   ```bash
-   nix run ./nix#mcp-ghcid -- --log-level debug
-   ```
-3. **Configure local editors** to point at the `.codex` entry. Codex-aware tooling will automatically launch the MCP server via the flake app.
-
-## Updating Upstream Revisions
-
-When `mcp-haskell` publishes a new commit:
-
-1. Run `nix flake lock --update-input mcp-haskell` inside `nix/`.
-2. Update the hard-coded revision in `default.nix`.
-3. Launch the server once to confirm the API still matches. Adjust the call to `mkMcpGhcid` if upstream changes its interface (e.g., the switch from `shell.uri`/`shell.attr` to `shell.packages`).
-4. Commit the lock file, `default.nix`, and any required changes together so future updates stay synchronized.
-5. After upgrading Obelisk itself, verify that `ghcCompilerPkg` and `cabalInstallPkg` still resolve; add new fallbacks if the attribute paths move.
+1. Run `nix flake update --update-input mcp-haskell` (or update the lock file for the relevant input).
+2. Verify that `lib.mkMcpGhcid` still matches the upstream API; adjust helper arguments if the contract changes.
+3. Confirm the Obelisk project shell still exports the expected `GHC`, `cabal-install`, and `ghcid` packages.
+4. Run `nix run .#mcp-ghcid -- --version` (or similar) to verify the server builds and launches.
 
 ## Summary
 
-- `nix/flake.nix` exposes `mcp-ghcid` as packages and apps by reusing the outputs from `default.nix`, enabling `nix run ./nix#mcp-ghcid` without additional boilerplate.
-- `default.nix` imports the pinned upstream flake, reuses Obelisk’s toolchain, and satisfies the current `mkMcpGhcid` contract through `shell.packages`.
-- `.codex/config.toml` invokes the flake app so Codex and manual workflows rely on the same derivation, guaranteeing a consistent build and debugging experience.
-
-With these pieces in place, all consumers—CLI, editors, or automation—launch `mcp-ghcid` through a single path that stays aligned with the project’s existing Obelisk environment.
+- `default.nix` exports the pure Obelisk project without any MCP hooks.
+- `flake.nix` imports that project, wires in the upstream `mcp-haskell` flake, and publishes `mcp-ghcid` as packages, apps, and dev shells.
+- Downstream Obelisk projects should depend on `default.nix` and reproduce the MCP wiring themselves if required, rather than importing this repository’s flake.
