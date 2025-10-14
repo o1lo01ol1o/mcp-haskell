@@ -4,6 +4,7 @@
     systems.url = "github:nix-systems/default";
     devenv.url = "github:cachix/devenv/d1388a093a7225c2abe8c244109c5a4490de4077";
     devenv.inputs.nixpkgs.follows = "nixpkgs";
+    codexNixpkgs.url = "github:NixOS/nixpkgs/5cb6ce09134f98a2f0daea93e66c2d4c31bb4531";
     # mcp-haskell.url = "github:o1lo01ol1o/mcp-haskell/a8ad736efe9e4780d0aa119f0d3c2168ba77b597";
 
   };
@@ -19,6 +20,7 @@
       nixpkgs,
       devenv,
       systems,
+      codexNixpkgs,
       ...
     }@inputs:
     let
@@ -32,11 +34,16 @@
             inherit system;
             config.allowUnfree = true;
           };
+          codexPkgs = import codexNixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
 
         in
         {
           devenv-up = self.devShells.${system}.default.config.procfileScript;
           devenv-test = self.devShells.${system}.default.config.test;
+          codex = codexPkgs.codex;
 
           # Provide mcp-ghcid as a convenient package using GHC 9.8.4
           mcp-ghcid = self.lib.mkMcpGhcid {

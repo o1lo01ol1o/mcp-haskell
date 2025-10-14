@@ -32,6 +32,22 @@
         "type": "github"
       }
     },
+    "codexNixpkgs": {
+      "locked": {
+        "lastModified": 1759565864,
+        "narHash": "sha256-NJ0AtM2jnvXPwaMsP5NTVZ0a1jIUw4PdTUOrfoNoBN0=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "5cb6ce09134f98a2f0daea93e66c2d4c31bb4531",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "5cb6ce09134f98a2f0daea93e66c2d4c31bb4531",
+        "type": "github"
+      }
+    },
     "devenv": {
       "inputs": {
         "cachix": "cachix",
@@ -198,6 +214,7 @@
     },
     "root": {
       "inputs": {
+        "codexNixpkgs": "codexNixpkgs",
         "devenv": "devenv",
         "nixpkgs": "nixpkgs",
         "systems": "systems"

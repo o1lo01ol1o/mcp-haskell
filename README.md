@@ -147,6 +147,8 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 
 #### Using mcp-ghcid in downstream projects
 
+- See the [Obelisk-focused integration guide](docs/mcp-ghcid.md) for a full example of wiring `mcp-ghcid` into an existing project that reuses its own toolchain.
+
 - **Expose a package**: add `mcp-hls` as a flake input and call `lib.mkMcpGhcid` with the `ghcid` derivation your project already uses. This keeps ghcid and your build on the identical GHC toolchain while always building the server with the nixpkgs pin from `mcp-hls`.
 
   ```nix
