@@ -1,50 +1,74 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 
 module HLS.Process
   ( -- * HLS Process Management
-    HLSProcess(..)
-  , HLSConfig(..)
-  , HLSStatus(..)
-  
+    HLSProcess (..),
+    HLSConfig (..),
+    HLSStatus (..),
+
     -- * Process Lifecycle
-  , startHLSProcess
-  , stopHLSProcess
-  , restartHLSProcess
-  , getHLSStatus
-  
+    startHLSProcess,
+    stopHLSProcess,
+    restartHLSProcess,
+    getHLSStatus,
+
     -- * Configuration
-  , defaultHLSConfig
-  , detectHLSExecutable
-  
+    defaultHLSConfig,
+    detectHLSExecutable,
+
     -- * Communication
-  , sendHLSRequest
-  , readHLSResponse
-  
+    sendHLSRequest,
+    readHLSResponse,
+
     -- * Health Monitoring
-  , checkHLSHealth
-  , isHLSRunning
-  ) where
+    checkHLSHealth,
+    isHLSRunning
+  )
+where
 
 import Control.Concurrent.Async
 import Control.Concurrent.STM
-import Control.Exception (SomeException, try)
+import Control.Exception (IOException, SomeException, try)
+import Control.Monad (void, when)
 import Data.Aeson (Value)
 import Data.Function ((&))
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime, getCurrentTime)
+import Foreign.C.Types (CInt (..))
+import qualified Data.ByteString as BS
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Encoding.Error as TE
 import qualified System.Directory as Dir
-import System.Process.Typed
+import System.Exit (ExitCode (..))
 import System.IO (Handle)
+import qualified System.IO as IO
+import System.IO.Error (isEOFError)
+import System.Posix.Signals (Signal)
+import System.Process.Typed
+  ( Process,
+    createPipe,
+    getStderr,
+    getStdin,
+    getStdout,
+    proc,
+    setStderr,
+    setStdin,
+    setStdout,
+    setWorkingDir,
+    startProcess,
+    stopProcess,
+    waitExitCode
+  )
 
 import Process.Manager
-import Process.Signals (SignalInfo)
-import Utils.Logging
+import Process.Signals (SignalInfo (..), getSignalName)
+import qualified Utils.Logging as Log
 
--- | HLS process status
+-- | HLS process status.
 data HLSStatus
   = HLSStopped
   | HLSStarting
@@ -53,224 +77,307 @@ data HLSStatus
   | HLSTerminated SignalInfo
   deriving (Show, Eq)
 
--- | Configuration for HLS process
+-- | Configuration for the HLS process.
 data HLSConfig = HLSConfig
-  { hlsCommand :: String           -- Command to run (usually "haskell-language-server")
-  , hlsArgs :: [String]           -- Additional arguments
-  , hlsWorkDir :: FilePath        -- Working directory
-  , hlsLogLevel :: Text           -- Log level (debug, info, warn, error)
-  , hlsEnableLogging :: Bool      -- Whether to enable file logging
-  } deriving (Show, Eq)
+  { hlsCommand :: String,
+    hlsArgs :: [String],
+    hlsWorkDir :: FilePath,
+    hlsLogLevel :: Text,
+    hlsEnableLogging :: Bool
+  }
+  deriving (Show, Eq)
 
--- | Default HLS configuration
+-- | Default configuration used when launching HLS.
 defaultHLSConfig :: FilePath -> HLSConfig
-defaultHLSConfig workDir = HLSConfig
-  { hlsCommand = "haskell-language-server"
-  , hlsArgs = ["--lsp"]
-  , hlsWorkDir = workDir
-  , hlsLogLevel = "info"
-  , hlsEnableLogging = True
-  }
+defaultHLSConfig workDir =
+  HLSConfig
+    { hlsCommand = "haskell-language-server",
+      hlsArgs = ["--lsp"],
+      hlsWorkDir = workDir,
+      hlsLogLevel = "info",
+      hlsEnableLogging = True
+    }
 
--- | HLS process handle
+-- | Runtime handle for a managed HLS process.
 data HLSProcess = HLSProcess
-  { hlsProcessManager :: ProcessManager HLSProcessData
-  , hlsConfig :: HLSConfig
-  , hlsStatus :: TVar HLSStatus
-  , hlsStartTime :: UTCTime
-  , hlsLastHealth :: TVar UTCTime
+  { hlsProcessManager :: ProcessManager HLSProcessData,
+    hlsConfig :: HLSConfig,
+    hlsStatus :: TVar HLSStatus,
+    hlsStartTime :: UTCTime,
+    hlsLastHealth :: TVar UTCTime
   }
 
--- Internal process data
+-- | Internal data retained for lifecycle management.
 data HLSProcessData = HLSProcessData
-  { hlsProcessHandle :: Process Handle Handle Handle
-  , hlsInputHandle :: Handle
-  , hlsOutputHandle :: Handle
-  , hlsErrorHandle :: Handle
-  , hlsOutputReader :: Async ()
-  , hlsErrorReader :: Async ()
+  { hlsProcessHandle :: Process Handle Handle Handle,
+    hlsInputHandle :: Handle,
+    hlsOutputHandle :: Handle,
+    hlsErrorHandle :: Handle,
+    hlsOutputReader :: Async (),
+    hlsErrorReader :: Async (),
+    hlsWatchdog :: Async ()
   }
 
 instance Show HLSProcessData where
   show _ = "HLSProcessData{...}"
 
--- | Start HLS process
+-- | Launch the HLS process and attach watchdogs/readers.
 startHLSProcess :: HLSConfig -> IO (Either Text HLSProcess)
 startHLSProcess config = do
-  logInfo "Starting HLS process"
-  
-  -- Check if HLS executable exists
-  hlsPath <- detectHLSExecutable (hlsCommand config)
-  case hlsPath of
-    Nothing -> return $ Left $ "HLS executable not found: " <> T.pack (hlsCommand config)
-    Just _ -> do
+  Log.logInfo "Starting HLS process"
+  resolved <- resolveExecutable (hlsCommand config)
+  case resolved of
+    Left err -> pure $ Left err
+    Right executablePath -> do
+      when (executablePath /= hlsCommand config) $
+        Log.logInfo $ "Resolved HLS executable: " <> T.pack executablePath
+
       startTime <- getCurrentTime
       processManager <- createProcessManager "hls"
       statusVar <- newTVarIO HLSStarting
       healthVar <- newTVarIO startTime
-      
-      let hlsProcess = HLSProcess
-            { hlsProcessManager = processManager
-            , hlsConfig = config
-            , hlsStatus = statusVar
-            , hlsStartTime = startTime
-            , hlsLastHealth = healthVar
-            }
-      
-      result <- Process.Manager.startProcess 
-        processManager
-        (hlsWorkDir config)
-        (buildCommandLine config)
-        (initializeHLS hlsProcess)
-        
+
+      let effectiveConfig =
+            config
+              { hlsCommand = executablePath
+              }
+
+          hlsProcess =
+            HLSProcess
+              { hlsProcessManager = processManager,
+                hlsConfig = effectiveConfig,
+                hlsStatus = statusVar,
+                hlsStartTime = startTime,
+                hlsLastHealth = healthVar
+              }
+
+      result <-
+        Process.Manager.startProcess
+          processManager
+          (hlsWorkDir effectiveConfig)
+          (buildCommandLine effectiveConfig)
+          (initializeHLS hlsProcess)
+
       case result of
         Left err -> do
           atomically $ writeTVar statusVar (HLSError err)
-          return $ Left err
-        Right _ -> do
+          pure $ Left err
+        Right _handle -> do
           atomically $ writeTVar statusVar HLSRunning
-          logInfo "HLS process started successfully"
-          return $ Right hlsProcess
+          Log.logInfo "HLS process started successfully"
+          pure $ Right hlsProcess
 
--- | Build command line for HLS
-buildCommandLine :: HLSConfig -> [String]
-buildCommandLine HLSConfig{..} = hlsCommand : hlsArgs
-
--- | Initialize HLS process data
-initializeHLS :: HLSProcess -> IO (Either Text HLSProcessData)
-initializeHLS HLSProcess{..} = do
-  let config = hlsConfig
-      processConfig = proc (hlsCommand config) (hlsArgs config)
-                    & setStdin createPipe  
-                    & setStdout createPipe
-                    & setStderr createPipe
-                    & setWorkingDir (hlsWorkDir config)
-  
-  result <- try @SomeException $ System.Process.Typed.startProcess processConfig
+-- | Stop the managed HLS process.
+stopHLSProcess :: HLSProcess -> IO (Either Text ())
+stopHLSProcess hlsProcess@HLSProcess {..} = do
+  Log.logInfo "Stopping HLS process"
+  result <- Process.Manager.stopProcess hlsProcessManager (cleanupHLS hlsProcess)
   case result of
-    Left ex -> return $ Left $ "Failed to start HLS: " <> T.pack (show ex)
+    Left err -> pure $ Left err
+    Right _ -> do
+      atomically $ writeTVar hlsStatus HLSStopped
+      Log.logInfo "HLS process stopped successfully"
+      pure $ Right ()
+
+-- | Restart the HLS process with the same configuration.
+restartHLSProcess :: HLSProcess -> IO (Either Text ())
+restartHLSProcess hlsProcess@HLSProcess {..} = do
+  Log.logInfo "Restarting HLS process"
+  result <-
+    Process.Manager.restartProcess
+      hlsProcessManager
+      (hlsWorkDir hlsConfig)
+      (buildCommandLine hlsConfig)
+      (initializeHLS hlsProcess)
+      (cleanupHLS hlsProcess)
+  case result of
+    Left err -> pure $ Left err
+    Right _ -> do
+      atomically $ writeTVar hlsStatus HLSRunning
+      Log.logInfo "HLS process restarted successfully"
+      pure $ Right ()
+
+-- | Current status of the managed process.
+getHLSStatus :: HLSProcess -> IO HLSStatus
+getHLSStatus HLSProcess {..} = readTVarIO hlsStatus
+
+-- | Send an LSP request (not yet implemented).
+sendHLSRequest :: HLSProcess -> Value -> IO (Either Text ())
+sendHLSRequest _ _ =
+  pure $ Left "HLS request sending not implemented"
+
+-- | Read an LSP response (not yet implemented).
+readHLSResponse :: HLSProcess -> IO (Either Text Value)
+readHLSResponse _ =
+  pure $ Left "HLS response reading not implemented"
+
+-- | Update health status and report the latest process state.
+checkHLSHealth :: HLSProcess -> IO (Either Text HLSStatus)
+checkHLSHealth hlsProcess@HLSProcess {..} = do
+  status <- getHLSStatus hlsProcess
+  touchHealth hlsLastHealth
+  pure $ Right status
+
+-- | Whether the process is currently running.
+isHLSRunning :: HLSProcess -> IO Bool
+isHLSRunning hlsProcess = do
+  status <- getHLSStatus hlsProcess
+  pure $ case status of
+    HLSRunning -> True
+    _ -> False
+
+-- Internal -------------------------------------------------------------------
+
+buildCommandLine :: HLSConfig -> [String]
+buildCommandLine HLSConfig {..} = hlsCommand : hlsArgs
+
+initializeHLS :: HLSProcess -> IO (Either Text HLSProcessData)
+initializeHLS hlsProcess@HLSProcess {..} = do
+  let HLSConfig {..} = hlsConfig
+      processConfig =
+        proc hlsCommand hlsArgs
+          & setStdin createPipe
+          & setStdout createPipe
+          & setStderr createPipe
+          & setWorkingDir hlsWorkDir
+
+  result <- try @SomeException $ startProcess processConfig
+  case result of
+    Left ex -> pure $ Left $ "Failed to start HLS: " <> T.pack (show ex)
     Right process -> do
       let inputHandle = getStdin process
           outputHandle = getStdout process
           errorHandle = getStderr process
-      
-      -- Start output readers
-      outputReader <- async $ readHLSOutput outputHandle
-      errorReader <- async $ readHLSError errorHandle
-      
-      return $ Right $ HLSProcessData
-        { hlsProcessHandle = process
-        , hlsInputHandle = inputHandle
-        , hlsOutputHandle = outputHandle
-        , hlsErrorHandle = errorHandle
-        , hlsOutputReader = outputReader
-        , hlsErrorReader = errorReader
-        }
 
--- | Read HLS stdout
-readHLSOutput :: Handle -> IO ()
-readHLSOutput _handle = do
-  result <- try @SomeException $ do
-    logInfo "HLS output reader started"
-    -- This would normally read LSP messages
-    -- For now, just log that we're reading
-  case result of
-    Left ex -> logError $ "HLS output reader error: " <> T.pack (show ex)
-    Right _ -> logInfo "HLS output reader finished"
+      IO.hSetBuffering outputHandle IO.LineBuffering
+      IO.hSetBuffering errorHandle IO.LineBuffering
 
--- | Read HLS stderr
-readHLSError :: Handle -> IO ()
-readHLSError _handle = do
-  result <- try @SomeException $ do
-    logInfo "HLS error reader started" 
-    -- This would normally read error messages
-  case result of
-    Left ex -> logError $ "HLS error reader error: " <> T.pack (show ex)
-    Right _ -> logInfo "HLS error reader finished"
+      outputReader <- async $ readHLSOutput hlsProcess outputHandle
+      errorReader <- async $ readHLSError hlsProcess errorHandle
+      watchdog <- async $ monitorHLSProcess hlsProcess process
 
--- | Stop HLS process
-stopHLSProcess :: HLSProcess -> IO (Either Text ())
-stopHLSProcess HLSProcess{..} = do
-  logInfo "Stopping HLS process"
-  result <- Process.Manager.stopProcess hlsProcessManager cleanupHLS
-  case result of
-    Left err -> return $ Left err
-    Right _ -> do
+      pure $
+        Right
+          HLSProcessData
+            { hlsProcessHandle = process,
+              hlsInputHandle = inputHandle,
+              hlsOutputHandle = outputHandle,
+              hlsErrorHandle = errorHandle,
+              hlsOutputReader = outputReader,
+              hlsErrorReader = errorReader,
+              hlsWatchdog = watchdog
+            }
+
+cleanupHLS :: HLSProcess -> HLSProcessData -> IO ()
+cleanupHLS HLSProcess {..} HLSProcessData {..} = do
+  let cancelAsyncSafe worker =
+        void $
+          try @SomeException $ do
+            cancel worker
+            void (waitCatch worker)
+
+  cancelAsyncSafe hlsOutputReader
+  cancelAsyncSafe hlsErrorReader
+  cancelAsyncSafe hlsWatchdog
+
+  void $ try @SomeException (IO.hClose hlsInputHandle)
+  void $ try @SomeException (IO.hClose hlsOutputHandle)
+  void $ try @SomeException (IO.hClose hlsErrorHandle)
+  void $ try @SomeException (stopProcess hlsProcessHandle)
+
+  touchHealth hlsLastHealth
+  atomically $ writeTVar hlsStatus HLSStopped
+  Log.logInfo "HLS process resources cleaned up"
+
+readHLSOutput :: HLSProcess -> Handle -> IO ()
+readHLSOutput process handle =
+  streamHandle process "HLS stdout" handle (\line -> Log.logDebug $ "[HLS stdout] " <> line)
+
+readHLSError :: HLSProcess -> Handle -> IO ()
+readHLSError process handle =
+  streamHandle process "HLS stderr" handle (\line -> Log.logWarn $ "[HLS stderr] " <> line)
+
+monitorHLSProcess :: HLSProcess -> Process Handle Handle Handle -> IO ()
+monitorHLSProcess HLSProcess {..} process = do
+  exitCode <- waitExitCode process
+  touchHealth hlsLastHealth
+  case exitCode of
+    ExitSuccess -> do
+      Log.logInfo "HLS process exited normally"
       atomically $ writeTVar hlsStatus HLSStopped
-      logInfo "HLS process stopped successfully"
-      return $ Right ()
+    ExitFailure code
+      | code >= 128 -> do
+          now <- getCurrentTime
+          let signalNumber = code - 128
+              signal :: Signal
+              signal = fromIntegral signalNumber
+              info =
+                SignalInfo
+                  { signalNumber = fromIntegral signalNumber :: CInt,
+                    signalName = getSignalName signal,
+                    receivedAt = now
+                  }
+          Log.logWarn $ "HLS process terminated by signal " <> signalName info
+          atomically $ writeTVar hlsStatus (HLSTerminated info)
+      | otherwise -> do
+          Log.logError $ "HLS process exited with failure code " <> T.pack (show code)
+          atomically $ writeTVar hlsStatus (HLSError $ "Exited with code " <> T.pack (show code))
 
--- | Cleanup HLS process resources
-cleanupHLS :: HLSProcessData -> IO ()
-cleanupHLS HLSProcessData{..} = do
-  -- Cancel async readers
-  cancel hlsOutputReader
-  cancel hlsErrorReader
-  
-  -- Stop the process
-  result <- try @SomeException $ System.Process.Typed.stopProcess hlsProcessHandle
-  case result of
-    Left ex -> logWarn $ "Error stopping HLS process: " <> T.pack (show ex)
-    Right _ -> logInfo "HLS process stopped successfully"
+streamHandle :: HLSProcess -> Text -> Handle -> (Text -> IO ()) -> IO ()
+streamHandle HLSProcess {..} label handle logLine = do
+  Log.logInfo $ label <> " reader started"
+  let loop = do
+        chunkResult <- try @IOException (BS.hGetSome handle 4096)
+        case chunkResult of
+          Left e ->
+            if isEOFError e
+              then Log.logInfo $ label <> " stream closed"
+              else Log.logWarn $ label <> " reader error: " <> T.pack (show e)
+          Right chunk ->
+            if BS.null chunk
+              then Log.logInfo $ label <> " stream closed"
+              else do
+                let textChunk = TE.decodeUtf8With TE.lenientDecode chunk
+                logLine textChunk
+                touchHealth hlsLastHealth
+                loop
+  loop
 
--- | Restart HLS process
-restartHLSProcess :: HLSProcess -> IO (Either Text ())
-restartHLSProcess hlsProcess@HLSProcess{..} = do
-  logInfo "Restarting HLS process"
-  result <- Process.Manager.restartProcess 
-    hlsProcessManager
-    (hlsWorkDir hlsConfig)
-    (buildCommandLine hlsConfig)
-    (initializeHLS hlsProcess)
-    cleanupHLS
-    
-  case result of
-    Left err -> return $ Left err
-    Right _ -> do
-      atomically $ writeTVar hlsStatus HLSRunning
-      logInfo "HLS process restarted successfully"
-      return $ Right ()
+touchHealth :: TVar UTCTime -> IO ()
+touchHealth healthVar = do
+  now <- getCurrentTime
+  atomically $ writeTVar healthVar now
 
--- | Get HLS status
-getHLSStatus :: HLSProcess -> IO HLSStatus
-getHLSStatus HLSProcess{..} = readTVarIO hlsStatus
+-- Executable discovery -------------------------------------------------------
 
--- | Detect HLS executable
 detectHLSExecutable :: String -> IO (Maybe FilePath)
 detectHLSExecutable command = do
-  result <- Dir.findExecutable command
-  case result of
-    Nothing -> do
-      -- Try common locations
-      let alternatives = ["haskell-language-server-wrapper", "hls"]
-      results <- mapM Dir.findExecutable alternatives
-      return $ head $ filter (\x -> x /= Nothing) results
-    Just path -> return $ Just path
+  found <- Dir.findExecutable command
+  case found of
+    Just path -> pure (Just path)
+    Nothing -> search alternatives
+  where
+    alternatives =
+      filter (/= command)
+        [ "haskell-language-server-wrapper",
+          "haskell-language-server",
+          "hls"
+        ]
 
--- | Send request to HLS
-sendHLSRequest :: HLSProcess -> Value -> IO (Either Text ())
-sendHLSRequest _process _request = do
-  -- This would send LSP requests to HLS
-  return $ Left "HLS request sending not implemented"
+    search :: [String] -> IO (Maybe FilePath)
+    search [] = pure Nothing
+    search (candidate : rest) = do
+      resolution <- Dir.findExecutable candidate
+      maybe (search rest) (pure . Just) resolution
 
--- | Read response from HLS  
-readHLSResponse :: HLSProcess -> IO (Either Text Value)
-readHLSResponse _process = do
-  -- This would read LSP responses from HLS
-  return $ Left "HLS response reading not implemented"
-
--- | Check HLS health
-checkHLSHealth :: HLSProcess -> IO (Either Text HLSStatus)
-checkHLSHealth hlsProcess@HLSProcess{..} = do
-  status <- getHLSStatus hlsProcess
-  now <- getCurrentTime
-  atomically $ writeTVar hlsLastHealth now
-  return $ Right status
-
--- | Check if HLS is running
-isHLSRunning :: HLSProcess -> IO Bool
-isHLSRunning hlsProcess = do
-  status <- getHLSStatus hlsProcess
-  return $ case status of
-    HLSRunning -> True
-    _ -> False
+resolveExecutable :: String -> IO (Either Text String)
+resolveExecutable command = do
+  detected <- detectHLSExecutable command
+  case detected of
+    Just path -> pure (Right path)
+    Nothing ->
+      pure $
+        Left $
+          "HLS executable not found. Tried "
+            <> T.pack command
+            <> " and common alternatives like haskell-language-server-wrapper."
