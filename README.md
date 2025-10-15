@@ -169,7 +169,7 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
             inherit system;
             ghcid = haskellPackages.ghcid;
             # Optional: extend the runtime environment for the server
-            shell = {
+            shell = mcp-hls.lib.shellSpec.simple {
               packages = [
                 haskellPackages.ghc
                 pkgs.cabal-install
@@ -183,10 +183,16 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
       };
   }
   ```
-  The helper always imports the `nixpkgs` pin from `mcp-hls`, then prepends the packages you provide to `PATH` and exports any `shell.env` variables before starting the binary.
-  Use `shell.commands = ["source .envrc"]` if you need to run extra shell snippets prior to launching the server.
+  The helper always imports the `nixpkgs` pin from `mcp-hls`. When you use `shellSpec.simple`, the wrapper prepends the listed packages to `PATH`, exports any environment variables, runs optional `commands`, and finally starts the binary.
+  Prefer `shellSpec.fromFlake` or `shellSpec.fromNixExpression` when your project already exposes a development shell—`mkMcpGhcid` will launch that shell with `nix develop`/`nix-shell` before invoking `mcp-ghcid-real`, so tools like Cabal or GHC see the same package DB they would inside your normal dev environment.
 
-- **Run the server**: build or run the package with `nix build .#mcp-ghcid` or `nix run .#mcp-ghcid -- --help`. The wrapper script (`mkMcpGhcid`) injects the provided `ghcid` onto `PATH` and, when `shell` is set, layers in those extra packages, environment exports, and optional `shell.commands` before launching the MCP server—no nested `nix develop` call required.
+- **Choose a shell spec**: Pick the constructor that matches how your project defines its dev environment.
+  - `lib.shellSpec.fromFlake` runs `nix develop` (or devenv, etc.) with the provided flake URI/attr/extra args.
+  - `lib.shellSpec.fromNixExpression` runs `nix-shell` for legacy `default.nix` / `shell.nix` setups.
+  - `lib.shellSpec.simple` keeps the original lightweight behaviour—extend `PATH`, set env vars, optionally run shell snippets.
+  See the [shell specification guide](docs/mcp-ghcid.md#shell-specifications) for detailed walkthroughs and additional options.
+
+- **Run the server**: build or run the package with `nix build .#mcp-ghcid` or `nix run .#mcp-ghcid -- --help`. The wrapper script (`mkMcpGhcid`) injects the provided `ghcid` onto `PATH` and, depending on the `shell` spec, either layers in simple PATH tweaks or spawns your project’s development shell before launching `mcp-ghcid-real`.
 - **Connect an MCP client**: configure your MCP tooling to launch the flake attribute. For example, a `.codex/config.toml` entry can mirror the one used in this repository:
 
   ```toml

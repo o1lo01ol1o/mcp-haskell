@@ -79,6 +79,7 @@
       # Library functions for creating mcp-ghcid with custom ghcid
       lib =
         let
+          nixpkgsLib = inputs.nixpkgs.lib;
           mkMcpServer =
             { system
             , packageName
@@ -114,34 +115,99 @@
 
               staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
 
-              shellConfig =
-                if shell == null then { }
+              realBinary =
+                pkgs.writeShellScriptBin "${binaryName}-real" ''
+                  exec ${staticPkg}/bin/${binaryName} "$@"
+                '';
+
+              shellConfigRaw =
+                if shell == null then { type = "none"; }
                 else if builtins.isAttrs shell then shell
                 else throw "mkMcpServer: shell must be an attribute set when provided";
 
-              toStringList = value:
-                if builtins.isNull value then [ ]
-                else if builtins.isList value then value
-                else if builtins.isString value then [ value ]
-                else throw "mkMcpServer: shell.commands must be a string or list of strings";
+              shellType =
+                if shellConfigRaw ? type then shellConfigRaw.type
+                else if shellConfigRaw ? kind then shellConfigRaw.kind
+                else "simple";
+
+              shellConfig = builtins.removeAttrs shellConfigRaw [ "type" "kind" ];
+
+              toStringList = what: err:
+                let
+                  asList =
+                    if builtins.isNull what then [ ]
+                    else if builtins.isList what then what
+                    else if builtins.isString what then [ what ]
+                    else throw err;
+                in
+                builtins.map (value: toString value) asList;
 
               toPackageList = value:
                 if builtins.isNull value then [ ]
                 else if builtins.isList value then value
                 else [ value ];
 
-              shellPackages = toPackageList (shellConfig.packages or [ ]);
-
               shellEnv = shellConfig.env or { };
 
-              shellCommands = toStringList (shellConfig.commands or [ ]);
+              shellPackages =
+                if shellType == "simple" then toPackageList (shellConfig.packages or [ ])
+                else [ ];
+
+              shellCommands =
+                if shellType == "simple" then
+                  toStringList (shellConfig.commands or [ ]) "mkMcpServer: shell.commands must be a string or list of strings"
+                else [ ];
+
+              resolveFlakeUri = uri:
+                let
+                  uriString =
+                    if builtins.isPath uri then builtins.toString uri
+                    else if builtins.isAttrs uri && uri ? outPath then toString uri.outPath
+                    else if builtins.isString uri then uri
+                    else throw "mkMcpServer: shell.uri must be a path, flake, or string";
+                  treatAsPath =
+                    builtins.isPath uri
+                    || nixpkgsLib.hasPrefix "/" uriString
+                    || nixpkgsLib.hasPrefix "." uriString;
+                in
+                if treatAsPath then
+                  builtins.toString (builtins.path { path = uriString; })
+                else
+                  uriString;
+
+              resolveNixExpression = expression:
+                let
+                  rawString =
+                    if builtins.isPath expression then builtins.toString expression
+                    else if builtins.isAttrs expression && expression ? outPath then toString expression.outPath
+                    else if builtins.isString expression then expression
+                    else throw "mkMcpServer: shell.expression must be a path or string";
+                  treatAsPath =
+                    builtins.isPath expression
+                    || nixpkgsLib.hasPrefix "/" rawString
+                    || nixpkgsLib.hasPrefix "." rawString;
+                in
+                if treatAsPath then
+                  builtins.toString (builtins.path { path = rawString; })
+                else
+                  rawString;
+
+              shellExtraArgs =
+                toStringList (shellConfig.extraArgs or [ ]) "mkMcpServer: shell.extraArgs must be a string or list of strings";
 
               runtimeToolChecked =
                 if builtins.isNull runtimeTool then
                   throw "mkMcpServer: runtimeTool must be provided"
                 else runtimeTool;
 
-              runtimeInputs = pkgs.lib.unique (shellPackages ++ [ runtimeToolChecked ]);
+              needsNix = shellType == "flake" || shellType == "nix-shell";
+
+              runtimeInputs =
+                pkgs.lib.unique (
+                  shellPackages
+                  ++ [ runtimeToolChecked ]
+                  ++ pkgs.lib.optionals needsNix [ pkgs.nix ]
+                );
 
               envLines =
                 pkgs.lib.mapAttrsToList
@@ -149,20 +215,67 @@
                     ''export ${name}=${pkgs.lib.escapeShellArg (toString value)}'')
                   shellEnv;
 
+              shellExecLine =
+                let
+                  escape = pkgs.lib.escapeShellArg;
+                  commandParts =
+                    if shellType == "flake" then
+                      let
+                        uri =
+                          if shellConfig ? uri then resolveFlakeUri shellConfig.uri
+                          else throw "mkMcpServer: shell.uri required for flake shell";
+                        attrArgs =
+                          if shellConfig ? attr then [ "--attr" shellConfig.attr ] else [ ];
+                      in
+                      [
+                        (escape "${pkgs.nix}/bin/nix")
+                        (escape "develop")
+                        (escape uri)
+                      ]
+                      ++ builtins.map escape attrArgs
+                      ++ builtins.map escape shellExtraArgs
+                      ++ [ (escape "--command") (escape "${realBinary}/bin/${binaryName}-real") ]
+                    else if shellType == "nix-shell" then
+                      let
+                        expression =
+                          if shellConfig ? expression then shellConfig.expression
+                          else throw "mkMcpServer: shell.expression required for nix-shell shells";
+                        attrArgs =
+                          if shellConfig ? attr then [ "--attr" shellConfig.attr ] else [ ];
+                        expressionResolved = resolveNixExpression expression;
+                      in
+                      [
+                        (escape "${pkgs.nix}/bin/nix-shell")
+                      ]
+                      ++ [ (escape expressionResolved) ]
+                      ++ builtins.map escape attrArgs
+                      ++ builtins.map escape shellExtraArgs
+                      ++ [ (escape "--command") (escape "${realBinary}/bin/${binaryName}-real") ]
+                    else
+                      [ (escape "${realBinary}/bin/${binaryName}-real") ];
+                in
+                ''exec ${pkgs.lib.concatStringsSep " " commandParts} "$@"'';
+
               scriptLines =
                 pkgs.lib.filter (line: line != "") (
                   envLines
                   ++ shellCommands
-                  ++ [ ''exec ${staticPkg}/bin/${binaryName} "$@"'' ]
+                  ++ [ shellExecLine ]
                 );
 
               scriptBody = pkgs.lib.concatStringsSep "\n" scriptLines;
 
             in
-            pkgs.writeShellApplication {
+            pkgs.symlinkJoin {
               name = binaryName;
-              runtimeInputs = runtimeInputs;
-              text = scriptBody + "\n";
+              paths = [
+                (pkgs.writeShellApplication {
+                  name = binaryName;
+                  runtimeInputs = runtimeInputs;
+                  text = scriptBody + "\n";
+                })
+                realBinary
+              ];
             };
         in
         rec {
@@ -196,6 +309,48 @@
               binaryName = "mcp-hls";
               disableChecks = true;
             };
+
+          shellSpec = {
+            fromFlake =
+              { uri
+              , attr ? null
+              , extraArgs ? [ ]
+              , env ? { }
+              }:
+              {
+                type = "flake";
+                inherit uri;
+              }
+              // nixpkgsLib.optionalAttrs (attr != null) { inherit attr; }
+              // nixpkgsLib.optionalAttrs (extraArgs != [ ]) { extraArgs = extraArgs; }
+              // nixpkgsLib.optionalAttrs (env != { }) { inherit env; };
+
+            fromNixExpression =
+              { expression
+              , attr ? null
+              , extraArgs ? [ ]
+              , env ? { }
+              }:
+              {
+                type = "nix-shell";
+                inherit expression;
+              }
+              // nixpkgsLib.optionalAttrs (attr != null) { inherit attr; }
+              // nixpkgsLib.optionalAttrs (extraArgs != [ ]) { extraArgs = extraArgs; }
+              // nixpkgsLib.optionalAttrs (env != { }) { inherit env; };
+
+            simple =
+              { packages ? [ ]
+              , env ? { }
+              , commands ? [ ]
+              }:
+              {
+                type = "simple";
+              }
+              // nixpkgsLib.optionalAttrs (packages != [ ]) { inherit packages; }
+              // nixpkgsLib.optionalAttrs (env != { }) { inherit env; }
+              // nixpkgsLib.optionalAttrs (commands != [ ]) { inherit commands; };
+          };
         };
 
       devShells = forEachSystem (
