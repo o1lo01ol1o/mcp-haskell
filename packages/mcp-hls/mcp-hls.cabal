@@ -37,6 +37,7 @@ library
     build-depends:    
         base >= 4.16
       , mcp-common
+      , mcp-sdk-hs
       , aeson >= 2.0
       , text >= 1.2
       , bytestring >= 0.10
@@ -48,6 +49,7 @@ library
       , lsp >= 2.0
       , lsp-types >= 2.0
       , containers >= 0.6
+      , vector >= 0.12
       , mtl >= 2.2
       , transformers >= 0.5
       , stm >= 2.5

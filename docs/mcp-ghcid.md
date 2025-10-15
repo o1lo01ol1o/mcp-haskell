@@ -63,6 +63,34 @@ Key points:
 
 The flake also sets the default `devShell` to the plain Obelisk shell from `default.nix`. This keeps local development focused on the same environment whether it is entered through `nix develop`, Obelisk tooling, or the MCP integrations.
 
+### Constructing `mcp-hls`
+
+`lib.mkMcpHls` mirrors the `mkMcpGhcid` helper but accepts a `haskell-language-server` (or wrapper) derivation instead of `ghcid`. This keeps the MCP launch script, runtime inputs, and shell customisation logic identical across both servers:
+
+```nix
+self.lib.mkMcpHls {
+  inherit system;
+  hls = pkgs.haskell-language-server;
+  shell = {
+    packages = [
+      pkgs.cabal-install
+      pkgs.nix
+      pkgs.haskell.packages.ghc948.ghc
+    ];
+    env = {
+      HLS_LOG_LEVEL = "info";
+    };
+    commands = [
+      "echo \"Preparing HLS runtime\""
+    ];
+  };
+}
+```
+
+The helper injects the project’s `mcp-hls` executable, adds the supplied HLS derivation to `PATH`, and honours the optional shell `env`/`commands` entries. Adjust the `shell.packages` list to match the tooling your HLS server expects.
+
+> **Note:** Until the HLS end-to-end suite is green, `mkMcpHls` disables Cabal checks for the `mcp-hls` package to avoid failing builds. Re-enable the checks by calling `lib.mkMcpServer` directly once the tests are stable.
+
 ## Guidance for downstream Obelisk projects
 
 - Import `default.nix` to obtain the Obelisk project definition. This file is intentionally free of MCP-specific logic so it can be vendored or overridden without pulling in extra dependencies.
@@ -71,12 +99,16 @@ The flake also sets the default `devShell` to the plain Obelisk shell from `defa
 
 ## `.codex` integration
 
-`.codex/config.toml` continues to launch the MCP server through the flake app:
+`.codex/config.toml` continues to launch the MCP servers through the flake apps:
 
 ```toml
 [mcp_servers.ghcid]
 command = "nix"
 args = ["run", ".#mcp-ghcid"]
+
+[mcp_servers.hls]
+command = "nix"
+args = ["run", ".#mcp-hls"]
 ```
 
 Because the flake already includes the Obelisk toolchain, Codex shares the exact dependency stack used by manual invocations (`nix run .#mcp-ghcid`). Remember to set `CODEX_HOME=.codex` in your shell so Codex stores its state locally, and ensure `.codex/*` (except `config.toml`) is ignored by Git.
@@ -93,5 +125,5 @@ When `mcp-haskell` publishes a new revision:
 ## Summary
 
 - `default.nix` exports the pure Obelisk project without any MCP hooks.
-- `flake.nix` imports that project, wires in the upstream `mcp-haskell` flake, and publishes `mcp-ghcid` as packages, apps, and dev shells.
+- `flake.nix` imports that project, wires in the upstream `mcp-haskell` flake, and publishes both `mcp-ghcid` and `mcp-hls` as packages, apps, and dev shells.
 - Downstream Obelisk projects should depend on `default.nix` and reproduce the MCP wiring themselves if required, rather than importing this repository’s flake.

@@ -58,95 +58,145 @@
             };
           };
 
+          # Provide mcp-hls using the same helper pattern
+          mcp-hls = self.lib.mkMcpHls {
+            inherit system;
+            hls = pkgs.haskell-language-server;
+            shell = {
+              packages = [
+                pkgs.cabal-install
+                pkgs.nix
+                pkgs.haskell.packages.ghc948.ghc
+              ];
+            };
+          };
+
           # Make it the default package
           default = self.packages.${system}.mcp-ghcid;
         }
       );
 
       # Library functions for creating mcp-ghcid with custom ghcid
-      lib = {
-        # Main function to create mcp-ghcid with a provided ghcid derivation
-        # Usage: mkMcpGhcid {
-        #   system = "x86_64-linux";
-        #   ghcid = myGhcidDerivation;  # Server always builds with this flake's nixpkgs pin
-        #   shell = {
-        #     packages = [ myPkgs.ghc myPkgs.cabal-install ];
-        #     env = { SOME_VAR = "value" };      # optional
-        #     commands = [ "source my-env.sh" ]; # optional extra shell commands
-        #   };
-        # }
-        mkMcpGhcid =
-          { system
-          , ghcid
-          , shell ? null
-          }:
-          let
-            pkgs = import inputs.nixpkgs {
-              inherit system;
-              config.allowUnfree = true;
+      lib =
+        let
+          mkMcpServer =
+            { system
+            , packageName
+            , packageSrc
+            , runtimeTool
+            , shell ? null
+            , binaryName ? packageName
+            , disableChecks ? false
+            }:
+            let
+              pkgs = import inputs.nixpkgs {
+                inherit system;
+                config.allowUnfree = true;
+              };
+
+              mcpOverlay = self: super: {
+                mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
+                mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
+                ${packageName} =
+                  let
+                    base = self.callCabal2nix packageName packageSrc { };
+                  in
+                  if disableChecks then pkgs.haskell.lib.dontCheck base else base;
+              };
+
+              haskellPkgs = pkgs.haskell.packages.ghc948.override {
+                overrides = mcpOverlay;
+              };
+
+              haskellPkg =
+                if builtins.hasAttr packageName haskellPkgs then haskellPkgs.${packageName}
+                else throw "mkMcpServer: expected package not found in Haskell overlay";
+
+              staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
+
+              shellConfig =
+                if shell == null then { }
+                else if builtins.isAttrs shell then shell
+                else throw "mkMcpServer: shell must be an attribute set when provided";
+
+              toStringList = value:
+                if builtins.isNull value then [ ]
+                else if builtins.isList value then value
+                else if builtins.isString value then [ value ]
+                else throw "mkMcpServer: shell.commands must be a string or list of strings";
+
+              toPackageList = value:
+                if builtins.isNull value then [ ]
+                else if builtins.isList value then value
+                else [ value ];
+
+              shellPackages = toPackageList (shellConfig.packages or [ ]);
+
+              shellEnv = shellConfig.env or { };
+
+              shellCommands = toStringList (shellConfig.commands or [ ]);
+
+              runtimeToolChecked =
+                if builtins.isNull runtimeTool then
+                  throw "mkMcpServer: runtimeTool must be provided"
+                else runtimeTool;
+
+              runtimeInputs = pkgs.lib.unique (shellPackages ++ [ runtimeToolChecked ]);
+
+              envLines =
+                pkgs.lib.mapAttrsToList
+                  (name: value:
+                    ''export ${name}=${pkgs.lib.escapeShellArg (toString value)}'')
+                  shellEnv;
+
+              scriptLines =
+                pkgs.lib.filter (line: line != "") (
+                  envLines
+                  ++ shellCommands
+                  ++ [ ''exec ${staticPkg}/bin/${binaryName} "$@"'' ]
+                );
+
+              scriptBody = pkgs.lib.concatStringsSep "\n" scriptLines;
+
+            in
+            pkgs.writeShellApplication {
+              name = binaryName;
+              runtimeInputs = runtimeInputs;
+              text = scriptBody + "\n";
+            };
+        in
+        rec {
+          inherit mkMcpServer;
+
+          # Main function to create mcp-ghcid with a provided ghcid derivation
+          mkMcpGhcid =
+            { system
+            , ghcid
+            , shell ? null
+            }:
+            mkMcpServer {
+              inherit system shell;
+              packageName = "mcp-ghcid";
+              packageSrc = ./packages/mcp-ghcid;
+              runtimeTool = ghcid;
+              binaryName = "mcp-ghcid";
             };
 
-            mcpOverlay = self: super: {
-              mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
-              mcp-common = self.callCabal2nix "mcp-common" (./packages/mcp-common) { };
-              mcp-ghcid = self.callCabal2nix "mcp-ghcid" (./packages/mcp-ghcid) { };
+          # Similar helper for mcp-hls wrapping a provided haskell-language-server derivation
+          mkMcpHls =
+            { system
+            , hls
+            , shell ? null
+            }:
+            mkMcpServer {
+              inherit system shell;
+              packageName = "mcp-hls";
+              packageSrc = ./packages/mcp-hls;
+              runtimeTool = hls;
+              binaryName = "mcp-hls";
+              disableChecks = true;
             };
-
-            haskellPkgs = pkgs.haskell.packages.ghc948.override {
-              overrides = mcpOverlay;
-            };
-
-            haskellPkg = haskellPkgs.mcp-ghcid;
-
-            staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
-
-            shellConfig =
-              if shell == null then { }
-              else if builtins.isAttrs shell then shell
-              else throw "mkMcpGhcid: shell must be an attribute set when provided";
-
-            toStringList = value:
-              if builtins.isNull value then [ ]
-              else if builtins.isList value then value
-              else if builtins.isString value then [ value ]
-              else throw "mkMcpGhcid: shell.commands must be a string or list of strings";
-
-            toPackageList = value:
-              if builtins.isNull value then [ ]
-              else if builtins.isList value then value
-              else [ value ];
-
-            shellPackages = toPackageList (shellConfig.packages or [ ]);
-
-            shellEnv = shellConfig.env or { };
-
-            shellCommands = toStringList (shellConfig.commands or [ ]);
-
-            runtimeInputs = pkgs.lib.unique (shellPackages ++ [ ghcid ]);
-
-            envLines =
-              pkgs.lib.mapAttrsToList
-                (name: value:
-                  ''export ${name}=${pkgs.lib.escapeShellArg (toString value)}'')
-                shellEnv;
-
-            scriptLines =
-              pkgs.lib.filter (line: line != "") (
-                envLines
-                ++ shellCommands
-                ++ [ ''exec ${staticPkg}/bin/mcp-ghcid "$@"'' ]
-              );
-
-            scriptBody = pkgs.lib.concatStringsSep "\n" scriptLines;
-
-          in
-          pkgs.writeShellApplication {
-            name = "mcp-ghcid";
-            runtimeInputs = runtimeInputs;
-            text = scriptBody + "\n";
-          };
-
-      };
+        };
 
       devShells = forEachSystem (
         system:

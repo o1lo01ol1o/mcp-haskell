@@ -16,15 +16,15 @@ CXX='clang++'
 export CXX
 DEVELOPER_DIR='/nix/store/rhlyld20zdzdi5wghb4b12gw52s9whr9-apple-sdk-11.3'
 export DEVELOPER_DIR
-DEVENV_DOTFILE='/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.devenv'
+DEVENV_DOTFILE='/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.devenv'
 export DEVENV_DOTFILE
 DEVENV_PROFILE='/nix/store/q20n71xqikzqbgwqb35wlk55q7cqzrqa-devenv-profile'
 export DEVENV_PROFILE
-DEVENV_ROOT='/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source'
+DEVENV_ROOT='/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source'
 export DEVENV_ROOT
-DEVENV_RUNTIME='/tmp/devenv-acce371'
+DEVENV_RUNTIME='/tmp/devenv-f3492c8'
 export DEVENV_RUNTIME
-DEVENV_STATE='/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.devenv/state'
+DEVENV_STATE='/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.devenv/state'
 export DEVENV_STATE
 DEVENV_TASKS='[{"after":[],"before":[],"command":"/nix/store/f5isfd94ps10al5yp4fb4qp1awc8wbx5-devenv-enterShell","description":"Runs when entering the shell","exec_if_modified":[],"input":{},"name":"devenv:enterShell","status":null},{"after":[],"before":[],"command":null,"description":"Runs when entering the test environment","exec_if_modified":[],"input":{},"name":"devenv:enterTest","status":null},{"after":[],"before":["devenv:enterShell"],"command":"/nix/store/01zfq3mjr3cnhhrzrxm2kysilqrvf0dj-devenv-files","description":"Create files","exec_if_modified":[],"input":{},"name":"devenv:files","status":null},{"after":[],"before":[],"command":"/nix/store/lls8zlfywlynw9q808phr1mv4mjay2mm-devenv-processes-hello","description":"","exec_if_modified":[],"input":{},"name":"devenv:processes:hello","status":null}]'
 export DEVENV_TASKS
@@ -55,7 +55,7 @@ NIX_CC='/nix/store/zzx6cfl99zknfrj9v7lmrshwzslfjv26-clang-wrapper-19.1.7'
 export NIX_CC
 NIX_CC_WRAPPER_TARGET_HOST_arm64_apple_darwin='1'
 export NIX_CC_WRAPPER_TARGET_HOST_arm64_apple_darwin
-NIX_CFLAGS_COMPILE=' -frandom-seed=0rb14mglx7 -isystem /nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev/include -fmacro-prefix-map=/nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-zlib-1.3.1-dev -isystem /nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev/include -fmacro-prefix-map=/nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libcxx-19.1.7-dev -isystem /nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev/include -fmacro-prefix-map=/nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-compiler-rt-libc-19.1.7-dev -isystem /nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev/include -fmacro-prefix-map=/nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libiconv-109-dev -isystem /nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev/include -fmacro-prefix-map=/nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libresolv-83-dev -isystem /nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev/include -fmacro-prefix-map=/nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libsbuf-14.1.0-dev -isystem /nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12/include -fmacro-prefix-map=/nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-cups-headers-2.4.12 -isystem /nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev/include -fmacro-prefix-map=/nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-zlib-1.3.1-dev -isystem /nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev/include -fmacro-prefix-map=/nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libcxx-19.1.7-dev -isystem /nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev/include -fmacro-prefix-map=/nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-compiler-rt-libc-19.1.7-dev -isystem /nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev/include -fmacro-prefix-map=/nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libiconv-109-dev -isystem /nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev/include -fmacro-prefix-map=/nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libresolv-83-dev -isystem /nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev/include -fmacro-prefix-map=/nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libsbuf-14.1.0-dev -isystem /nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12/include -fmacro-prefix-map=/nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-cups-headers-2.4.12'
+NIX_CFLAGS_COMPILE=' -frandom-seed=8smll49law -isystem /nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev/include -fmacro-prefix-map=/nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-zlib-1.3.1-dev -isystem /nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev/include -fmacro-prefix-map=/nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libcxx-19.1.7-dev -isystem /nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev/include -fmacro-prefix-map=/nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-compiler-rt-libc-19.1.7-dev -isystem /nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev/include -fmacro-prefix-map=/nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libiconv-109-dev -isystem /nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev/include -fmacro-prefix-map=/nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libresolv-83-dev -isystem /nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev/include -fmacro-prefix-map=/nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libsbuf-14.1.0-dev -isystem /nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12/include -fmacro-prefix-map=/nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-cups-headers-2.4.12 -isystem /nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev/include -fmacro-prefix-map=/nix/store/ypda0r27k1fg2zz7daqmhqgxdqff8jg4-zlib-1.3.1-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-zlib-1.3.1-dev -isystem /nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev/include -fmacro-prefix-map=/nix/store/797z3fy28rz9hd7k7jr1hysq9mhjvggb-libcxx-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libcxx-19.1.7-dev -isystem /nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev/include -fmacro-prefix-map=/nix/store/71r56z118j50ia5n1rd79d7qyyhaxf33-compiler-rt-libc-19.1.7-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-compiler-rt-libc-19.1.7-dev -isystem /nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev/include -fmacro-prefix-map=/nix/store/7s8gizw7d3hw8wyf7npayp5dk47727mz-libiconv-109-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libiconv-109-dev -isystem /nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev/include -fmacro-prefix-map=/nix/store/r3hk1845bif5qyfx0kanmw9dc0cfh0vh-libresolv-83-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libresolv-83-dev -isystem /nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev/include -fmacro-prefix-map=/nix/store/92hlm24jgcqgpxnznd762j4xss51g1hx-libsbuf-14.1.0-dev=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-libsbuf-14.1.0-dev -isystem /nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12/include -fmacro-prefix-map=/nix/store/fx3nf7w0slbr0b648ahym3i19rnw4w9p-cups-headers-2.4.12=/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-cups-headers-2.4.12'
 export NIX_CFLAGS_COMPILE
 NIX_DONT_SET_RPATH='1'
 export NIX_DONT_SET_RPATH
@@ -89,9 +89,9 @@ PATH='/nix/store/67y8b61qwbrjngxfiq4b6pfp77vkfyvy-devenv/bin:/nix/store/r4r1k29k
 export PATH
 PATH_LOCALE='/nix/store/pqj6qk91cwlcm1ihc5i2d6vdc77sh9rv-locale-118/share/locale'
 export PATH_LOCALE
-PC_CONFIG_FILES='/nix/store/2y5bg4fhyk7ik24za5z8yc5y0f6gkgzd-process-compose.yaml'
+PC_CONFIG_FILES='/nix/store/r5vbm3jjxgz42w8i4sgsp1lwc70c7a3r-process-compose.yaml'
 export PC_CONFIG_FILES
-PC_SOCKET_PATH='/tmp/devenv-acce371/pc.sock'
+PC_SOCKET_PATH='/tmp/devenv-f3492c8/pc.sock'
 export PC_SOCKET_PATH
 PKG_CONFIG='pkg-config'
 export PKG_CONFIG
@@ -257,21 +257,21 @@ then
 fi
 unset HOST_PATH NIX_BUILD_CORES __structuredAttrs buildInputs buildPhase builder depsBuildBuild depsBuildBuildPropagated depsBuildTarget depsBuildTargetPropagated depsHostHost depsHostHostPropagated depsTargetTarget depsTargetTargetPropagated dontAddDisableDepTrack doCheck doInstallCheck nativeBuildInputs out outputs patches phases preferLocalBuild propagatedBuildInputs propagatedNativeBuildInputs shell shellHook stdenv strictDeps
 
-mkdir -p /tmp/devenv-acce371
-ln -snf /tmp/devenv-acce371 /nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.devenv/run
+mkdir -p /tmp/devenv-f3492c8
+ln -snf /tmp/devenv-f3492c8 /nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.devenv/run
 
 # Read the path to the installed `configPath` from the hook state.
 configFile=""
-if [ -f '\''/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.devenv/state/git-hooks/config.json'\'' ]; then
-  prevConfigPath=$(/nix/store/8cadjdrc1gjc66ijgn2wnmfj6yajnxmb-jq-1.8.1-bin/bin/jq -r '\''.configPath'\'' '\''/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.devenv/state/git-hooks/config.json'\'')
+if [ -f '\''/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.devenv/state/git-hooks/config.json'\'' ]; then
+  prevConfigPath=$(/nix/store/8cadjdrc1gjc66ijgn2wnmfj6yajnxmb-jq-1.8.1-bin/bin/jq -r '\''.configPath'\'' '\''/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.devenv/state/git-hooks/config.json'\'')
   if [ -n "$prevConfigPath" ] && [ "$prevConfigPath" != "null" ]; then
-    configFile="/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/$prevConfigPath"
+    configFile="/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/$prevConfigPath"
   fi
 fi
 
 # Fall back to the current config path if state file doesn'\''t exist or doesn'\''t contain a path
 if [ -z "$configFile" ]; then
-  configFile='\''/nix/store/hv0gn2rr311hakmw4rn9ch25hwi7mihz-source/.pre-commit-config.yaml'\''
+  configFile='\''/nix/store/0xdimrvmk350dxx7mpr5hli9r94729ds-source/.pre-commit-config.yaml'\''
 fi
 
 # Only remove if it'\''s a symlink to the nix store
