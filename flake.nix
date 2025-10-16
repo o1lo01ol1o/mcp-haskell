@@ -221,18 +221,33 @@
                   commandParts =
                     if shellType == "flake" then
                       let
-                        uri =
+                        baseUri =
                           if shellConfig ? uri then resolveFlakeUri shellConfig.uri
                           else throw "mkMcpServer: shell.uri required for flake shell";
-                        attrArgs =
-                          if shellConfig ? attr then [ "--attr" shellConfig.attr ] else [ ];
+                        attrValueRaw =
+                          if shellConfig ? attr then
+                            let
+                              attr = shellConfig.attr;
+                            in
+                            if builtins.isString attr then attr
+                            else throw "mkMcpServer: shell.attr must be a string"
+                          else null;
+                        attrValue =
+                          if builtins.isNull attrValueRaw then null
+                          else if nixpkgsLib.hasPrefix "#" attrValueRaw then builtins.substring 1 (builtins.stringLength attrValueRaw - 1) attrValueRaw
+                          else attrValueRaw;
+                        flakeRef =
+                          if ! builtins.isNull attrValue then
+                            if builtins.match ".*#.*" baseUri != null then
+                              throw "mkMcpServer: shell.uri already includes a flake attribute; remove shell.attr or drop the inline #"
+                            else "${baseUri}#${attrValue}"
+                          else baseUri;
                       in
                       [
                         (escape "${pkgs.nix}/bin/nix")
                         (escape "develop")
-                        (escape uri)
+                        (escape flakeRef)
                       ]
-                      ++ builtins.map escape attrArgs
                       ++ builtins.map escape shellExtraArgs
                       ++ [ (escape "--command") (escape "${realBinary}/bin/${binaryName}-real") ]
                     else if shellType == "nix-shell" then
