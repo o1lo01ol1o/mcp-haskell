@@ -59,10 +59,9 @@ import System.Process.Typed
     setStdin,
     setStdout,
     setWorkingDir,
-    startProcess,
-    stopProcess,
     waitExitCode
   )
+import qualified System.Process.Typed as PT
 
 import Process.Manager
 import Process.Signals (SignalInfo (..), getSignalName)
@@ -241,7 +240,7 @@ initializeHLS hlsProcess@HLSProcess {..} = do
           & setStderr createPipe
           & setWorkingDir hlsWorkDir
 
-  result <- try @SomeException $ startProcess processConfig
+  result <- try @SomeException $ PT.startProcess processConfig
   case result of
     Left ex -> pure $ Left $ "Failed to start HLS: " <> T.pack (show ex)
     Right process -> do
@@ -283,7 +282,7 @@ cleanupHLS HLSProcess {..} HLSProcessData {..} = do
   void $ try @SomeException (IO.hClose hlsInputHandle)
   void $ try @SomeException (IO.hClose hlsOutputHandle)
   void $ try @SomeException (IO.hClose hlsErrorHandle)
-  void $ try @SomeException (stopProcess hlsProcessHandle)
+  void $ try @SomeException (PT.stopProcess hlsProcessHandle)
 
   touchHealth hlsLastHealth
   atomically $ writeTVar hlsStatus HLSStopped

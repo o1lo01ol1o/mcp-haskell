@@ -352,7 +352,7 @@ getGHCIDMessages registry args = do
               -- Limit count if requested
               let limitedMessages = case count of
                     Nothing -> filteredMessages
-                    Just n -> take n filteredMessages
+                    Just n -> takeLast n filteredMessages
 
               timestamp <- getCurrentTime
               let resultData =
@@ -385,6 +385,11 @@ getGHCIDMessages registry args = do
           ToolCallResult
             (V.fromList [TextContent (jsonToText response)])
             Nothing
+
+takeLast :: Int -> [a] -> [a]
+takeLast n xs =
+  let k = max 0 (length xs - n)
+   in drop k xs
 
 -- | List all GHCID processes
 listGHCIDProcesses :: ProcessRegistry -> Maybe Data.Aeson.Object -> IO ToolsCallResponse

@@ -51,6 +51,7 @@ import Data.Function ((&))
 import Data.Hashable (Hashable (..))
 import Data.Char (isAlpha, isDigit, isSpace)
 import Data.List (isSuffixOf)
+import Data.Foldable (toList)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -71,6 +72,8 @@ import System.Posix.Signals (sigKILL, sigTERM, signalProcessGroup)
 import System.Posix.Process (getProcessID)
 import System.Posix.Types (CPid (..), ProcessGroupID)
 import Utils.Logging
+import Data.Sequence (Seq)
+import qualified Data.Sequence as Seq
 
 watchdogCheckIntervalMicros :: Int
 watchdogCheckIntervalMicros = 5 * 1000000
@@ -83,6 +86,12 @@ watchdogStaleThresholdSeconds = 120
 
 watchdogStopTimeoutSeconds :: Int
 watchdogStopTimeoutSeconds = 10
+
+stdoutBufferCapacity :: Int
+stdoutBufferCapacity = 10000
+
+stderrBufferCapacity :: Int
+stderrBufferCapacity = 1000
 
 -- | URI identifier for cabal projects
 newtype CabalURI = CabalURI {getCabalURI :: Text}
@@ -134,6 +143,8 @@ data GHCIDHandle = GHCIDHandle
     ghcidStatus :: TVar GHCIDStatus,
     ghcidOutput :: TBQueue Text, -- Buffered output lines
     ghcidErrors :: TBQueue Text, -- Error messages
+    ghcidOutputBuffer :: TVar (Seq Text), -- Snapshot of current stdout state
+    ghcidErrorBuffer :: TVar (Seq Text), -- Snapshot of current stderr state
     ghcidStartTime :: UTCTime,
     ghcidCabalURI :: CabalURI,
     ghcidWorkDir :: FilePath,
@@ -358,16 +369,29 @@ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
   let pid = fmap (CPid . fromIntegral) rawPid
 
   -- Create STM variables
-  (statusVar, outputQueue, errorQueue, outputReaderVar, errorReaderVar, watchdogVar, healthVar, lastMsgVar) <- atomically $ do
-    s <- newTVar GHCIDStarting
-    oq <- newTBQueue 10000 -- 10k line buffer
-    eq <- newTBQueue 1000 -- 1k error buffer
-    outReaderVar <- newTVar Nothing
-    errReaderVar <- newTVar Nothing
-    wd <- newTVar Nothing
-    hv <- newTVar startTime
-    lm <- newTVar (Just launchMessage)
-    return (s, oq, eq, outReaderVar, errReaderVar, wd, hv, lm)
+  ( statusVar,
+    outputQueue,
+    errorQueue,
+    outputSnapshotVar,
+    errorSnapshotVar,
+    outputReaderVar,
+    errorReaderVar,
+    watchdogVar,
+    healthVar,
+    lastMsgVar
+    ) <-
+    atomically $ do
+      s <- newTVar GHCIDStarting
+      oq <- newTBQueue (fromIntegral stdoutBufferCapacity) -- 10k line buffer
+      eq <- newTBQueue (fromIntegral stderrBufferCapacity) -- 1k error buffer
+      os <- newTVar Seq.empty
+      es <- newTVar Seq.empty
+      outReaderVar <- newTVar Nothing
+      errReaderVar <- newTVar Nothing
+      wd <- newTVar Nothing
+      hv <- newTVar startTime
+      lm <- newTVar (Just launchMessage)
+      return (s, oq, eq, os, es, outReaderVar, errReaderVar, wd, hv, lm)
 
   let ghcidHandle =
         GHCIDHandle
@@ -376,6 +400,8 @@ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
             ghcidStatus = statusVar,
             ghcidOutput = outputQueue,
             ghcidErrors = errorQueue,
+            ghcidOutputBuffer = outputSnapshotVar,
+            ghcidErrorBuffer = errorSnapshotVar,
             ghcidStartTime = startTime,
             ghcidCabalURI = cabalURI,
             ghcidWorkDir = workDir,
@@ -417,7 +443,11 @@ createGHCIDHandle registry cabalURI workDir commandOverride extraArgs = do
           throwIO (userError (T.unpack errTxt))
         _ -> return ghcidHandle'
     Just code -> do
-      (outLines, errLines) <- atomically $ drainQueues ghcidHandle'
+      (outLines, errLines) <-
+        atomically $ do
+          outs <- toList <$> readTVar (ghcidOutputBuffer ghcidHandle')
+          errs <- toList <$> readTVar (ghcidErrorBuffer ghcidHandle')
+          return (outs, errs)
       let decoratedErrs = map ("[stderr] " <>) errLines
           combinedLines = outLines ++ decoratedErrs
           combinedLog = T.unlines combinedLines
@@ -659,10 +689,17 @@ processStdoutLine :: GHCIDHandle -> Text -> IO ()
 processStdoutLine handle@GHCIDHandle {..} rawLine = do
   recordHeartbeat handle
   let line = sanitizeLine rawLine
-  atomically $ writeTBQueue ghcidOutput line
-  when (not $ T.null line) $ do
+  shouldLog <- atomically $ do
+    prevStatus <- readTVar ghcidStatus
+    when (shouldResetOutput prevStatus line) $
+      resetOutputState handle
+    writeTBQueue ghcidOutput line
+    modifyTVar' ghcidOutputBuffer (appendBounded stdoutBufferCapacity line)
+    when (not $ T.null line) $
+      writeTVar ghcidLastMessage (Just line)
+    pure (not $ T.null line)
+  when shouldLog $
     logDebug $ "[ghcid stdout] " <> line
-    atomically $ writeTVar ghcidLastMessage (Just line)
   updateStatusFromStdout handle line
 
 -- | Consume and process a stderr line from ghcid.
@@ -670,11 +707,40 @@ processStderrLine :: GHCIDHandle -> Text -> IO ()
 processStderrLine handle@GHCIDHandle {..} rawLine = do
   recordHeartbeat handle
   let line = sanitizeLine rawLine
-  atomically $ writeTBQueue ghcidErrors line
+  atomically $ do
+    writeTBQueue ghcidErrors line
+    modifyTVar' ghcidErrorBuffer (appendBounded stderrBufferCapacity line)
   when (not $ T.null line) $ do
     logDebug $ "[ghcid stderr] " <> line
     atomically $ writeTVar ghcidLastMessage (Just ("stderr: " <> line))
   updateStatusFromStderr handle line
+
+lineIndicatesCompilation :: Text -> Bool
+lineIndicatesCompilation line = lineIndicatesCompilationLower (T.toLower (T.strip line))
+
+lineIndicatesCompilationLower :: Text -> Bool
+lineIndicatesCompilationLower lower =
+  any (`T.isPrefixOf` lower) ["compiling", "reloading", "loading", "ghci> :reload"]
+    || "ghci> :l" `T.isPrefixOf` lower
+
+shouldResetOutput :: GHCIDStatus -> Text -> Bool
+shouldResetOutput prev line =
+  prev /= GHCIDCompiling && lineIndicatesCompilation line
+
+resetOutputState :: GHCIDHandle -> STM ()
+resetOutputState GHCIDHandle {..} = do
+  void $ flushTBQueueCustom ghcidOutput
+  void $ flushTBQueueCustom ghcidErrors
+  writeTVar ghcidOutputBuffer Seq.empty
+  writeTVar ghcidErrorBuffer Seq.empty
+
+appendBounded :: Int -> Text -> Seq Text -> Seq Text
+appendBounded capacity line seq
+  | capacity <= 0 = Seq.singleton line
+  | Seq.length seq >= capacity =
+      let trimmed = Seq.drop 1 seq
+       in trimmed Seq.|> line
+  | otherwise = seq Seq.|> line
 
 -- | Remove common ANSI / control characters so downstream parsing is stable.
 sanitizeLine :: Text -> Text
@@ -702,7 +768,7 @@ interpretStdoutLine :: GHCIDStatus -> Text -> Maybe GHCIDStatus
 interpretStdoutLine prev line
   | isAllGood = Just (GHCIDRunning moduleCount')
   | mentionsModulesLoaded = Just (GHCIDRunning moduleCount')
-  | isCompilingLine = Just GHCIDCompiling
+  | lineIndicatesCompilationLower lower = Just GHCIDCompiling
   | isExitFailure = Just (GHCIDError (T.strip line))
   | otherwise = Nothing
   where
@@ -714,9 +780,6 @@ interpretStdoutLine prev line
 
     isAllGood = "all good" `T.isInfixOf` lower
     mentionsModulesLoaded = "module loaded" `T.isInfixOf` lower || "modules loaded" `T.isInfixOf` lower
-    isCompilingLine =
-      any (`T.isPrefixOf` lower) ["compiling", "reloading", "loading", "ghci> :reload"]
-        || "ghci> :l" `T.isPrefixOf` lower
     isExitFailure =
       "exited unexpectedly" `T.isInfixOf` lower
         || "exit failure" `T.isInfixOf` lower
@@ -789,8 +852,9 @@ readFromGHCID GHCIDHandle {..} = do
 
 -- | Get buffered output as text
 getBufferedOutput :: GHCIDHandle -> IO Text
-getBufferedOutput handle = do
-  (outLines, errLines) <- atomically $ drainQueues handle
+getBufferedOutput GHCIDHandle {..} = do
+  outLines <- toList <$> readTVarIO ghcidOutputBuffer
+  errLines <- toList <$> readTVarIO ghcidErrorBuffer
   let decoratedErrs = map ("[stderr] " <>) errLines
   return $ T.unlines (outLines ++ decoratedErrs)
 
@@ -804,12 +868,6 @@ flushTBQueueCustom queue = do
       item <- readTBQueue queue
       rest <- flushTBQueueCustom queue
       return (item : rest)
-
-drainQueues :: GHCIDHandle -> STM ([Text], [Text])
-drainQueues GHCIDHandle {..} = do
-  outs <- flushTBQueueCustom ghcidOutput
-  errs <- flushTBQueueCustom ghcidErrors
-  return (outs, errs)
 
 -- | Health monitoring loop
 healthMonitorLoop :: ProcessRegistry -> IO ()
