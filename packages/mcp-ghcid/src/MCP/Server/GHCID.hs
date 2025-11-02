@@ -176,6 +176,11 @@ registerGHCIDTools ghcidState = do
                                   [ "type" .= ("string" :: Text),
                                     "description" .= ("Working directory for the GHCID process" :: Text)
                                   ],
+                              "component"
+                                .= object
+                                  [ "type" .= ("string" :: Text),
+                                    "description" .= ("Optional Cabal component to load (e.g. lib:mypkg, exe:tool)" :: Text)
+                                  ],
                               "options"
                                 .= object
                                   [ "type" .= ("object" :: Text),
@@ -246,6 +251,11 @@ registerGHCIDTools ghcidState = do
                                 .= object
                                   [ "type" .= ("string" :: Text),
                                     "description" .= ("New working directory (optional)" :: Text)
+                                  ],
+                              "component"
+                                .= object
+                                  [ "type" .= ("string" :: Text),
+                                    "description" .= ("Optional Cabal component to load (e.g. lib:mypkg, exe:tool)" :: Text)
                                   ]
                             ],
                         "required" .= (["cabal_uri"] :: [Text])
