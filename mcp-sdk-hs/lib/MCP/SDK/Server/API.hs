@@ -45,7 +45,7 @@ import MCP.SDK.Server.State
   )
 import MCP.SDK.Transport (sendMessage)
 import MCP.SDK.Types
-  ( Capabilities (..),
+  ( ClientCapabilities (..),
     CreateMessageRequest,
     CreateMessageResponse,
     ElicitRequest,
@@ -149,7 +149,7 @@ createMessage req = do
   case mClientCaps of
     Nothing -> return $ Left $ ProtocolError "Client capabilities not yet known."
     Just caps ->
-      case sampling caps of
+      case clientSampling caps of
         Nothing -> return $ Left $ InvalidCapability "Client does not support sampling/createMessage"
         Just _ -> do
           -- 2. Generate a new request ID

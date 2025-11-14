@@ -32,7 +32,7 @@ module MCP.SDK.Client
     withCapabilities,
     withTimeout,
     finalizeClient,
-    defaultCapabilities
+    defaultClientCapabilities
   )
 where
 
@@ -43,6 +43,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID
+import MCP.SDK.Capabilities (defaultClientCapabilities)
 import MCP.SDK.Error
 import MCP.SDK.Protocol
 import MCP.SDK.Request
@@ -53,19 +54,19 @@ import MCP.SDK.Types
 data MCPClient t = MCPClient
   { clientTransport :: t,
     clientState :: TVar ClientState,
-    clientCapabilities :: Capabilities,
+    clientCapabilities :: ClientCapabilities,
     clientInfo :: ClientInfo
   }
 
 data ClientState
   = Uninitialized
   | Initializing
-  | Ready ServerInfo Capabilities
+  | Ready ServerInfo ServerCapabilities
   | Closed
   deriving (Eq, Show)
 
 -- | Create a new MCP client
-newMCPClient :: t -> ClientInfo -> Capabilities -> IO (MCPClient t)
+newMCPClient :: t -> ClientInfo -> ClientCapabilities -> IO (MCPClient t)
 newMCPClient transport info caps = do
   state <- newTVarIO Uninitialized
   return
@@ -86,7 +87,7 @@ instance (Transport t) => RequestHandler (MCPClient t) where
       Ready _ _ -> sendRequestInternal client ctx request
 
 -- | Initialize the client with the server
-initializeClient :: (Transport t) => MCPClient t -> IO (Either MCPError (ServerInfo, Capabilities))
+initializeClient :: (Transport t) => MCPClient t -> IO (Either MCPError (ServerInfo, ServerCapabilities))
 initializeClient client = do
   currentState <- readTVarIO (clientState client)
   case currentState of
@@ -262,7 +263,7 @@ pingServer client = do
 data ClientBuilder t = ClientBuilder
   { cbTransport :: Maybe t,
     cbClientInfo :: Maybe ClientInfo,
-    cbCapabilities :: Maybe Capabilities,
+    cbCapabilities :: Maybe ClientCapabilities,
     cbTimeout :: Maybe Int
   }
 
@@ -280,7 +281,7 @@ withClientInfo name version builder =
   builder {cbClientInfo = Just (ClientInfo name version)}
 
 -- | Set capabilities
-withCapabilities :: Capabilities -> ClientBuilder t -> ClientBuilder t
+withCapabilities :: ClientCapabilities -> ClientBuilder t -> ClientBuilder t
 withCapabilities caps builder = builder {cbCapabilities = Just caps}
 
 -- | Set timeout
@@ -300,13 +301,9 @@ finalizeClient ClientBuilder {..} = do
       (return $ Left $ ValidationError "Client info is required")
       (return . Right)
       cbClientInfo
-  let capabilities = maybe defaultCapabilities id cbCapabilities
+  let capabilities = maybe defaultClientCapabilities id cbCapabilities
 
   case (transport, clientInfo) of
     (Right t, Right info) -> Right <$> newMCPClient t info capabilities
     (Left err, _) -> return $ Left err
     (_, Left err) -> return $ Left err
-
--- | Default capabilities for clients
-defaultCapabilities :: Capabilities
-defaultCapabilities = Capabilities Nothing Nothing

@@ -61,6 +61,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import MCP.SDK.Capabilities (minimalServerCapabilities)
 import MCP.SDK.Error
 import MCP.SDK.Protocol
 import qualified MCP.SDK.Server.API as API
@@ -73,7 +74,7 @@ import MCP.SDK.Types hiding (elicitInput)
 import MCP.SDK.Types.Auth (AuthInfo)
 
 -- | Create a new MCP server with monad transformer stack
-newMCPServer :: (Transport t) => t -> Implementation -> Capabilities -> ServerHandlers -> ServerConfig -> IO (ServerEnv (ServerContext ServerM))
+newMCPServer :: (Transport t) => t -> Implementation -> ServerCapabilities -> ServerHandlers -> ServerConfig -> IO (ServerEnv (ServerContext ServerM))
 newMCPServer transport info caps handlers config = do
   state <- newTVarIO ServerUninitialized
   context <- newServerContext
@@ -585,7 +586,7 @@ isServerReady env = do
 data ServerBuilder = ServerBuilder
   { sbTransport :: Maybe SomeTransport,
     sbServerInfo :: Maybe Implementation,
-    sbCapabilities :: Maybe Capabilities,
+    sbCapabilities :: Maybe ServerCapabilities,
     sbHandlers :: Maybe ServerHandlers,
     sbConfig :: Maybe ServerConfig
   }
@@ -604,7 +605,7 @@ withServerInfo name version builder =
   builder {sbServerInfo = Just (ServerInfo name version)}
 
 -- | Set server capabilities
-withServerCapabilities :: Capabilities -> ServerBuilder -> ServerBuilder
+withServerCapabilities :: ServerCapabilities -> ServerBuilder -> ServerBuilder
 withServerCapabilities caps builder = builder {sbCapabilities = Just caps}
 
 -- | Set server handlers
@@ -630,8 +631,8 @@ finalizeServer ServerBuilder {..} =
           Right <$> newMCPServer t info capabilities handlers config
 
 -- | Default capabilities for servers
-defaultServerCapabilities :: Capabilities
-defaultServerCapabilities = Capabilities Nothing Nothing
+defaultServerCapabilities :: ServerCapabilities
+defaultServerCapabilities = minimalServerCapabilities
 
 -- | Default handlers (all return not implemented, but now in ServerM)
 defaultServerHandlers :: ServerHandlers

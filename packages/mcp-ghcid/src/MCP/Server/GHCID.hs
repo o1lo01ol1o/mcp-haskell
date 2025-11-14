@@ -27,7 +27,7 @@ import qualified Data.Text as T
 import GHCID.Config (GHCIDServerConfig (..))
 import GHCID.ProcessRegistry (ProcessRegistry, createProcessRegistry, shutdownProcessRegistry)
 import GHCID.Signals (ShutdownConfig (..), defaultShutdownConfig, withGracefulShutdown)
-import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ToolsCapability (..), buildServerCapabilities)
+import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ServerCapabilities, ToolsCapability (..), buildServerCapabilities)
 import MCP.SDK.Error (MCPError (..))
 import qualified MCP.SDK.Server as Server
 import MCP.SDK.Server.API (registerTool)
@@ -138,7 +138,7 @@ runGHCIDServer config = do
       Log.logInfo "GHCID MCP server completed successfully"
 
 -- | Create server capabilities
-createServerCapabilities :: Capabilities
+createServerCapabilities :: ServerCapabilities
 createServerCapabilities =
   buildServerCapabilities
     ServerCapabilityBuilder

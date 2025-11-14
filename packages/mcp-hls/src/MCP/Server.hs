@@ -40,7 +40,7 @@ import qualified Data.Vector as V
 import HLS.Config (HLSServerConfig (..), defaultServerConfig)
 import qualified HLS.Process as HLS
 import HLS.Signals (ShutdownConfig (..), defaultShutdownConfig, withGracefulShutdown)
-import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ToolsCapability (..), buildServerCapabilities)
+import MCP.SDK.Capabilities (ServerCapabilityBuilder (..), ServerCapabilities, ToolsCapability (..), buildServerCapabilities)
 import MCP.SDK.Error (MCPError (..))
 import qualified MCP.SDK.Server as Server
 import MCP.SDK.Server.API (registerTool)
@@ -48,8 +48,7 @@ import MCP.SDK.Server.Monad (ServerConfig (..), ServerM, runServerM)
 import MCP.SDK.Transport (wrapTransport)
 import MCP.SDK.Transport.Stdio (createStdioTransport)
 import MCP.SDK.Types
-  ( Capabilities,
-    Content (TextContent),
+  ( Content (TextContent),
     Tool (..),
     ToolCallResult (..),
     ToolDefinition (..),
@@ -141,7 +140,7 @@ runHLSServer cfg = do
       Log.logInfo "HLS MCP server terminated cleanly"
 
 -- | Capabilities exposed by the HLS server.
-createServerCapabilities :: Capabilities
+createServerCapabilities :: ServerCapabilities
 createServerCapabilities =
   buildServerCapabilities
     ServerCapabilityBuilder

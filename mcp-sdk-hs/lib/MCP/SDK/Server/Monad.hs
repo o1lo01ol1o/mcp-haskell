@@ -31,7 +31,7 @@ import MCP.SDK.Error (MCPError)
 import MCP.SDK.Server.Middleware (AuthMiddleware)
 import MCP.SDK.Server.State (ServerContext)
 import MCP.SDK.Transport (Transport)
-import MCP.SDK.Types (Capabilities, ClientInfo, Implementation, RequestId)
+import MCP.SDK.Types (ClientCapabilities, ClientInfo, Implementation, RequestId, ServerCapabilities)
 import MCP.SDK.Logging (withLogging)
 
 -- | Server Monad Transformer Stack: ReaderT + LoggingT + IO
@@ -55,13 +55,13 @@ data ServerEnv ctx where
     (Transport t) =>
     { serverTransport :: t,
       serverState :: TVar ServerState,
-      serverCapabilities :: Capabilities,
+      serverCapabilities :: ServerCapabilities,
       serverInfo :: Implementation,
       serverHandlers :: ServerHandlers,
       serverConfig :: ServerConfig,
       serverContext :: ctx,
       serverPendingRequests :: TVar (Map RequestId (TMVar (Either MCPError Value))),
-      clientCapabilities :: TVar (Maybe Capabilities)
+      clientCapabilities :: TVar (Maybe ClientCapabilities)
     } ->
     ServerEnv ctx
 
@@ -82,7 +82,7 @@ data LogLevel = Debug | Info | Warn | Error deriving (Eq, Show, Ord)
 -- | Server state machine
 data ServerState
   = ServerUninitialized
-  | ServerReady ClientInfo Capabilities
+  | ServerReady ClientInfo ClientCapabilities
   | ServerClosed
   deriving (Eq, Show)
 

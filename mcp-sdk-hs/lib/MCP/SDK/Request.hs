@@ -36,7 +36,7 @@ import MCP.SDK.Error
 import MCP.SDK.Types
 
 -- | Smart constructors that parse and validate, ensuring only valid requests can be created
-makeInitializeRequest :: Text -> Capabilities -> ClientInfo -> Either MCPError (MCPRequest 'Initialize)
+makeInitializeRequest :: Text -> ClientCapabilities -> ClientInfo -> Either MCPError (MCPRequest 'Initialize)
 makeInitializeRequest pv caps info
   | T.null pv = Left (validationError "protocolVersion" "cannot be empty")
   | otherwise = Right $ InitializeReq (InitializeRequest pv caps info)

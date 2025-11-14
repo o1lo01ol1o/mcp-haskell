@@ -37,7 +37,9 @@ main = hspec $ do
     it "can build client capabilities" $ do
       let caps = buildClientCapabilities ClientCapabilityBuilder
             { ccbExperimental = Nothing
-            , ccbSampling = Nothing  
+            , ccbSampling = Nothing
+            , ccbRoots = Nothing
+            , ccbElicitation = Nothing
             }
       caps `shouldBe` defaultClientCapabilities
 

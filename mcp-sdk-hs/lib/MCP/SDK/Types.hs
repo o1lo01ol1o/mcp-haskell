@@ -24,7 +24,14 @@ module MCP.SDK.Types
   , ClientInfo (..)
   , ServerInfo (..)
   , Implementation
-  , Capabilities (..)
+  , ClientCapabilities (..)
+  , ClientRootsCapability (..)
+  , ServerCapabilities (..)
+  , ToolsCapability (..)
+  , ResourcesCapability (..)
+  , PromptsCapability (..)
+  , LoggingCapability (..)
+  , SamplingCapability (..)
   , InitializeRequest (..)
   , ToolsListRequest (..)
   , ToolsCallRequest (..)
@@ -199,16 +206,57 @@ data ServerInfo = ServerInfo
 -- | Implementation information (alias for consistency with MCP spec)
 type Implementation = ServerInfo
 
-data Capabilities = Capabilities
-  { experimental :: Maybe Object,
-    sampling :: Maybe Object
+-- | Server capability descriptors
+data ToolsCapability = ToolsCapability
+  { toolsListChanges :: Maybe Bool
+  }
+  deriving (Eq, Show)
+
+data ResourcesCapability = ResourcesCapability
+  { resourcesSubscribe :: Maybe Bool,
+    resourcesListChanges :: Maybe Bool
+  }
+  deriving (Eq, Show)
+
+data PromptsCapability = PromptsCapability
+  { promptsListChanges :: Maybe Bool
+  }
+  deriving (Eq, Show)
+
+data LoggingCapability = LoggingCapability
+  deriving (Eq, Show)
+
+data SamplingCapability = SamplingCapability
+  deriving (Eq, Show)
+
+data ClientRootsCapability = ClientRootsCapability
+  { rootsListChanges :: Maybe Bool
+  }
+  deriving (Eq, Show)
+
+-- | Client-declared capabilities during initialization.
+data ClientCapabilities = ClientCapabilities
+  { clientElicitation :: Maybe Value,
+    clientExperimental :: Maybe Object,
+    clientRoots :: Maybe ClientRootsCapability,
+    clientSampling :: Maybe Value
+  }
+  deriving (Eq, Show)
+
+-- | Server-advertised capabilities during initialization.
+data ServerCapabilities = ServerCapabilities
+  { serverExperimental :: Maybe Object,
+    serverLogging :: Maybe LoggingCapability,
+    serverPrompts :: Maybe PromptsCapability,
+    serverResources :: Maybe ResourcesCapability,
+    serverTools :: Maybe ToolsCapability
   }
   deriving (Eq, Show)
 
 -- | Request types
 data InitializeRequest = InitializeRequest
   { initProtocolVersion :: Text,
-    initCapabilities :: Capabilities,
+    initCapabilities :: ClientCapabilities,
     initClientInfo :: ClientInfo
   }
   deriving (Eq, Show)
@@ -300,7 +348,7 @@ data ElicitResponse = ElicitResponse
 -- | Response types
 data InitializeResponse = InitializeResponse
   { respProtocolVersion :: Text,
-    respCapabilities :: Capabilities,
+    respCapabilities :: ServerCapabilities,
     respServerInfo :: ServerInfo,
     respInstructions :: Maybe Text
   }
@@ -518,18 +566,92 @@ instance ToJSON ServerInfo where
         "version" .= version
       ]
 
-instance FromJSON Capabilities where
-  parseJSON = withObject "Capabilities" $ \o ->
-    Capabilities
-      <$> o .:? "experimental"
+instance FromJSON ClientRootsCapability where
+  parseJSON = withObject "ClientRootsCapability" $ \o ->
+    ClientRootsCapability
+      <$> o .:? "listChanged"
+
+instance ToJSON ClientRootsCapability where
+  toJSON (ClientRootsCapability listChanged) =
+    object ["listChanged" .= listChanged]
+
+instance FromJSON ClientCapabilities where
+  parseJSON = withObject "ClientCapabilities" $ \o ->
+    ClientCapabilities
+      <$> o .:? "elicitation"
+      <*> o .:? "experimental"
+      <*> o .:? "roots"
       <*> o .:? "sampling"
 
-instance ToJSON Capabilities where
-  toJSON (Capabilities experimentalCapabilities samplingCapabilities) =
+instance ToJSON ClientCapabilities where
+  toJSON (ClientCapabilities elicitation experimental roots sampling) =
     object
-      [ "experimental" .= experimentalCapabilities,
-        "sampling" .= samplingCapabilities
+      [ "elicitation" .= elicitation,
+        "experimental" .= experimental,
+        "roots" .= roots,
+        "sampling" .= sampling
       ]
+
+instance FromJSON ToolsCapability where
+  parseJSON = withObject "ToolsCapability" $ \o ->
+    ToolsCapability <$> o .:? "listChanged"
+
+instance ToJSON ToolsCapability where
+  toJSON (ToolsCapability listChanges) =
+    object ["listChanged" .= listChanges]
+
+instance FromJSON ResourcesCapability where
+  parseJSON = withObject "ResourcesCapability" $ \o ->
+    ResourcesCapability
+      <$> o .:? "subscribe"
+      <*> o .:? "listChanged"
+
+instance ToJSON ResourcesCapability where
+  toJSON (ResourcesCapability subscribe listChanges) =
+    object
+      [ "subscribe" .= subscribe,
+        "listChanged" .= listChanges
+      ]
+
+instance FromJSON PromptsCapability where
+  parseJSON = withObject "PromptsCapability" $ \o ->
+    PromptsCapability <$> o .:? "listChanged"
+
+instance ToJSON PromptsCapability where
+  toJSON (PromptsCapability listChanges) =
+    object ["listChanged" .= listChanges]
+
+instance FromJSON LoggingCapability where
+  parseJSON = withObject "LoggingCapability" $ \_ -> pure LoggingCapability
+
+instance ToJSON LoggingCapability where
+  toJSON LoggingCapability = object []
+
+instance FromJSON SamplingCapability where
+  parseJSON = withObject "SamplingCapability" $ \_ -> pure SamplingCapability
+
+instance ToJSON SamplingCapability where
+  toJSON SamplingCapability = object []
+
+instance FromJSON ServerCapabilities where
+  parseJSON = withObject "ServerCapabilities" $ \o ->
+    ServerCapabilities
+      <$> o .:? "experimental"
+      <*> o .:? "logging"
+      <*> o .:? "prompts"
+      <*> o .:? "resources"
+      <*> o .:? "tools"
+
+instance ToJSON ServerCapabilities where
+  toJSON (ServerCapabilities experimental logging prompts resources tools) =
+    object $
+      concat
+        [ maybe [] (\v -> ["experimental" .= v]) experimental,
+          maybe [] (\v -> ["logging" .= v]) logging,
+          maybe [] (\v -> ["prompts" .= v]) prompts,
+          maybe [] (\v -> ["resources" .= v]) resources,
+          maybe [] (\v -> ["tools" .= v]) tools
+        ]
 
 instance FromJSON Role where
   parseJSON = withText "Role" $ \case
