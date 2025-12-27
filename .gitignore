@@ -6,8 +6,11 @@ dist-newstyle
 .codex/auth.json
 .codex/version.json
 .codex/history.jsonl
+.codex/mcp-ghcid
+.codex/mcp-hls
 .direnv
 log
+.mcp-cache
 skeleton.out
 command.out
 .cabal
