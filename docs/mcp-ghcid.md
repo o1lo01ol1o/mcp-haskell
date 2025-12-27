@@ -145,17 +145,17 @@ The flake also sets the default `devShell` to the plain Obelisk shell from `defa
 
 ### Constructing `mcp-hls`
 
-`lib.mkMcpHls` mirrors the `mkMcpGhcid` helper but accepts a `haskell-language-server` (or wrapper) derivation instead of `ghcid`. This keeps the MCP launch script, runtime inputs, and shell customisation logic identical across both servers:
+`lib.mkMcpHls` mirrors the `mkMcpGhcid` helper. Instead of taking an explicit `hls` derivation, it derives and injects `haskell-language-server-wrapper` from the same `ghcPackageSet` used to build the MCP server. This keeps the MCP launch script, runtime inputs, and shell customisation logic identical across both servers:
 
 ```nix
 self.lib.mkMcpHls {
   inherit system;
-  hls = pkgs.haskell-language-server;
+  ghcPackageSet = pkgs.haskell.packages.ghc948;
   shell = self.lib.shellSpec.simple {
     packages = [
       pkgs.cabal-install
       pkgs.nix
-      pkgs.haskell.packages.ghc948.ghc
+      ghcPackageSet.ghc
     ];
     env = {
       HLS_LOG_LEVEL = "info";
@@ -167,7 +167,7 @@ self.lib.mkMcpHls {
 }
 ```
 
-The helper injects the project’s `mcp-hls` executable, adds the supplied HLS derivation to `PATH`, and honours the optional shell `env`/`commands` entries when using `shellSpec.simple`. Swap in `shellSpec.fromFlake` or `shellSpec.fromNixExpression` if HLS should run inside the project’s development shell.
+The helper injects the project’s `mcp-hls` executable, adds the matching HLS wrapper to `PATH`, and honours the optional shell `env`/`commands` entries when using `shellSpec.simple`. Swap in `shellSpec.fromFlake` or `shellSpec.fromNixExpression` if HLS should run inside the project’s development shell.
 
 > **Note:** Until the HLS end-to-end suite is green, `mkMcpHls` disables Cabal checks for the `mcp-hls` package to avoid failing builds. Re-enable the checks by calling `lib.mkMcpServer` directly once the tests are stable.
 

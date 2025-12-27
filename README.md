@@ -13,7 +13,7 @@ This project provides two main MCP servers:
 
 ### Building with Nix
 
-**Important**: This flake requires you to provide a `ghcid` derivation that uses the same GHC version as your project. This ensures compatibility between the MCP server and the Haskell project it's monitoring.
+**Important**: In downstream projects, prefer building `mcp-ghcid` with the same Haskell toolchain as your project (i.e. provide the `ghcid` derivation from your project’s package set). This ensures ghcid sees the same package database and GHC version as your workspace.
 
 #### Basic Usage
 
@@ -89,15 +89,36 @@ This project provides two main MCP servers:
 #### Running
 
 ```bash
-# Build your mcp-ghcid
-nix build .#mcp-ghcid
+# Build mcp-ghcid (this repo)
+nix build .#mcp-ghcid -o .mcp-cache/mcp-ghcid
 
 # Run it
-./result/bin/mcp-ghcid --help
+.mcp-cache/mcp-ghcid/bin/mcp-ghcid --help
 
 # Or install to profile
 nix profile install .#mcp-ghcid
 ```
+
+### Codex / MCP Clients (stdio)
+
+`mcp-ghcid` and `mcp-hls` support both common stdio framings:
+
+- `Content-Length: ...\r\n\r\n{...}` (the MCP spec framing)
+- newline-delimited JSON `{...}\n` (used by recent Codex CLI versions for MCP stdio)
+
+If an MCP client reports a “handshake timed out” but the server starts instantly, double-check the framing expectations on both sides.
+
+### Logging (configurable)
+
+Logging is controlled by a combination of CLI flags and environment variables, and is intended to be set by the consuming project:
+
+- `--log-level debug|info|warn|error` (recommended default: `warn`)
+- `MCP_LOG_FILE=/path/to/log` (set to `/dev/null` to effectively disable file logging)
+- `MCP_LOG_STDERR=1` to mirror logs to stderr (useful when you want logs surfaced in a parent process like Codex)
+
+This repository’s launch scripts (`scripts/run-mcp-ghcid.sh`, `scripts/run-mcp-hls.sh`) only set `MCP_LOG_FILE` if it is not already set, so downstream wrappers can override it.
+
+When running over MCP stdio, logs must not be written to stdout (stdout is reserved for JSON-RPC); use file logging and/or stderr mirroring instead.
 
 ## Packages
 
@@ -111,6 +132,7 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - Compiler error and warning reporting
 - Process management with graceful shutdown
 - Comprehensive filtering and message formatting (`output` + `lines` are returned)
+- Default `cabal repl` invocations use a per-project `--builddir` under `.mcp-cache/cabal-build/` to avoid `dist-newstyle` races when multiple sessions run concurrently in a monorepo
 
 **Available MCP Tools:**
 - `ghcid-start` – Start a new ghcid process for a project (automatically runs `cabal repl <package>` based on the supplied `.cabal` file or directory; override via `options.command` if you need something custom, or pass `component` to target a specific Cabal component)
@@ -201,6 +223,42 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
   args = ["run", "/path/to/your/project#mcp-ghcid", "--", "--log-level", "debug"]
   ```
 
+- **Codex via `nix develop` (common pattern)**: if your project already has a Nix shell that provides `mcp-ghcid` on `PATH`, Codex can start it via `nix develop --command`:
+
+  ```toml
+  [mcp_servers.ghcid]
+  startup_timeout_sec = 60
+  command = "nix"
+  args = [
+    "develop",
+    "-f",
+    "./nix/shell-codex.nix",
+    "--command",
+    "mcp-ghcid",
+    "--log-level",
+    "warn",
+  ]
+
+  [mcp_servers.ghcid.env]
+  # Optional: override logging destination (or set to /dev/null to disable)
+  MCP_LOG_FILE = "/tmp/mcp-ghcid.log"
+  # Optional: mirror logs into Codex's own log (debugging only)
+  # MCP_LOG_STDERR = "1"
+  ```
+
+  This pattern works with recent Codex CLI versions because the servers support both newline-delimited JSON and `Content-Length` stdio framing.
+
+- **Codex via `direnv exec` (recommended when Codex is sandboxed)**: some Codex sandbox policies prevent writes to `$HOME`, which can break `cabal`/`ghcid` (and can also make `nix develop` fail if Nix needs to write caches). If your repo already uses `direnv` + `use flake`, prefer launching via `direnv exec` so the server inherits the fully-materialized dev environment while keeping all build artifacts inside the workspace:
+
+  ```toml
+  [mcp_servers.ghcid]
+  command = "direnv"
+  args = ["exec", ".", "mcp-ghcid", "--log-level", "warn"]
+
+  [mcp_servers.ghcid.env]
+  CABAL_DIR = ".cabal"
+  ```
+
 - **Customize behaviour**: supply a JSON config via `--config path/to/config.json` to override defaults (e.g. `instructionsMessage`, `retentionPolicy`, `maxConcurrentProcesses`). The built-in auto-discovery falls back to the current working directory when no config file is provided.
 
 ### mcp-hls
@@ -250,7 +308,7 @@ packages/
   } -> Derivation
   ```
 
-**Important**: This flake does NOT provide pre-built packages. You must use the library function with your own `ghcid` derivation to ensure GHC version compatibility.
+This flake also exports packages for convenience (e.g. `.#mcp-ghcid`), but those builds are tied to this repository’s pinned `nixpkgs` and chosen GHC set. For downstream projects, prefer using the library functions and supply your project’s `ghcid` derivation.
 
 ### Why No Default Packages?
 
@@ -346,7 +404,7 @@ MIT License. See LICENSE file for details.
 
 ### MCP Protocol Version
 
-Uses MCP Protocol v2025-03-26 with full support for:
+Uses MCP Protocol v2025-06-18 with full support for:
 - Tools capability with list and execute operations
 - Resources capability with list and read operations  
 - Proper JSON-RPC 2.0 message handling
