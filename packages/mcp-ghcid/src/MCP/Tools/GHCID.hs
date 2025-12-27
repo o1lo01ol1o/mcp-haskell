@@ -22,6 +22,7 @@ import Data.Aeson
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isSpace)
 import Data.List (find)
+import Data.Hashable (hash)
 import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -29,7 +30,7 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Time (getCurrentTime)
 import qualified Data.Vector as V
-import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeExtension, takeFileName, (</>))
 import GHCID.Filter (applyShellFilter)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
@@ -72,7 +73,11 @@ startGHCIDProcess registry args = do
               requestedComponent = startComponent startArgs
               (commandSpecOverride, extraArgsTexts) = normalizeStartOptions (startOptions startArgs)
           resolvedSpec <- liftIO $ resolveCommandSpec cabalURI workDir commandSpecOverride requestedComponent
-          let commandOverride = renderCommandSpec resolvedSpec
+          resolvedSpecWithBuildDir <-
+            case commandSpecOverride of
+              Just _ -> pure resolvedSpec
+              Nothing -> liftIO $ addIsolatedBuildDir workDir cabalURI resolvedSpec
+          let commandOverride = renderCommandSpec resolvedSpecWithBuildDir
               extraArgs = map T.unpack extraArgsTexts
           logDebug $
             "Launching ghcid for "
@@ -214,7 +219,8 @@ restartGHCIDProcess registry args = do
                 Right _ -> return $ Just "old_process"
 
           resolvedSpec <- liftIO $ resolveCommandSpec cabalURI workDir Nothing requestedComponent
-          let commandOverride = renderCommandSpec resolvedSpec
+          resolvedSpecWithBuildDir <- liftIO $ addIsolatedBuildDir workDir cabalURI resolvedSpec
+          let commandOverride = renderCommandSpec resolvedSpecWithBuildDir
           logDebug $
             "Restart launching ghcid for "
               <> getCabalURI cabalURI
@@ -456,6 +462,57 @@ listGHCIDProcesses registry args = do
 normalizeStartOptions :: Maybe StartGHCIDOptions -> (Maybe CommandSpec, [Text])
 normalizeStartOptions Nothing = (Nothing, [])
 normalizeStartOptions (Just StartGHCIDOptions {..}) = (startCommandSpec, startAdditionalArgs)
+
+-- | When multiple ghcid/cabal repl sessions run concurrently in a monorepo, sharing
+-- a single `dist-newstyle/` can lead to builddir races/corruption. To avoid this,
+-- default invocations isolate Cabal's build directory per project (cabalURI).
+--
+-- This only applies when the caller did not explicitly override the command.
+addIsolatedBuildDir :: FilePath -> CabalURI -> CommandSpec -> IO CommandSpec
+addIsolatedBuildDir workDir cabalURI spec = do
+  let buildDirName = "cabal-build-" <> show (abs (hash (getCabalURI cabalURI)))
+      buildDir = workDir </> ".mcp-cache" </> "cabal-build" </> buildDirName
+  createDirectoryIfMissing True buildDir
+  pure $ injectBuildDirArg buildDir spec
+
+injectBuildDirArg :: FilePath -> CommandSpec -> CommandSpec
+injectBuildDirArg buildDir spec =
+  case spec of
+    CommandList parts -> CommandList (injectIntoParts parts)
+    CommandString txt -> CommandString (injectIntoString txt)
+  where
+    buildDirText = T.pack buildDir
+
+    injectIntoParts :: [Text] -> [Text]
+    injectIntoParts parts =
+      case parts of
+        ("cabal" : "repl" : _) -> ensureBuildDir parts
+        ("cabal" : "v2-repl" : _) -> ensureBuildDir parts
+        _ -> parts
+
+    ensureBuildDir :: [Text] -> [Text]
+    ensureBuildDir parts
+      | any (== "--builddir") parts = parts
+      | otherwise =
+          case parts of
+            ("cabal" : cmd : rest) -> "cabal" : cmd : "--builddir" : buildDirText : rest
+            _ -> parts
+
+    injectIntoString :: Text -> Text
+    injectIntoString txt
+      | "--builddir" `T.isInfixOf` txt = txt
+      | "cabal repl" `T.isPrefixOf` T.strip txt = T.strip txt <> " --builddir " <> quoteIfNeeded buildDirText
+      | "cabal v2-repl" `T.isPrefixOf` T.strip txt = T.strip txt <> " --builddir " <> quoteIfNeeded buildDirText
+      | otherwise = txt
+
+    quoteIfNeeded :: Text -> Text
+    quoteIfNeeded t
+      | T.any isSpace t = "\"" <> T.concatMap escapeChar t <> "\""
+      | otherwise = t
+
+    escapeChar '"' = T.pack "\\\""
+    escapeChar '\\' = T.pack "\\\\"
+    escapeChar c = T.singleton c
 
 renderCommandSpec :: CommandSpec -> Text
 renderCommandSpec (CommandString t) = t
