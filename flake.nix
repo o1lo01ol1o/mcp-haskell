@@ -65,12 +65,39 @@
       lib =
         let
           nixpkgsLib = inputs.nixpkgs.lib;
+          shellSpec =
+            let
+              normalizePackages = packages:
+                if builtins.isList packages then packages else [ packages ];
+            in
+            {
+              simple = { packages ? [ ], env ? { }, commands ? [ ] }:
+                {
+                  type = "simple";
+                  packages = normalizePackages packages;
+                  inherit env commands;
+                };
+
+              fromFlake = { uri, attr ? null, extraArgs ? [ ], env ? { } }:
+                {
+                  type = "flake";
+                  inherit uri attr extraArgs env;
+                };
+
+              fromNixExpression = { expression, attr ? null, extraArgs ? [ ], env ? { } }:
+                {
+                  type = "nix-expression";
+                  inherit expression attr extraArgs env;
+                };
+            };
+
 	          mkMcpServer =
 	            { system
               , pkgs ? null
 	            , packageName
 	            , packageSrc
-	            , shell ? { }
+	            , shell ? null
+              , pathPackages ? [ ]
 	            , binaryName ? packageName
 	            , disableChecks ? false
 	            , ghcPackageSet ? null
@@ -90,6 +117,53 @@
 	                  pkgs'.haskell.packages.ghc912
 	                else
 	                  ghcPackageSet;
+
+                # Normalise legacy `shell` arguments into a single shape consumed by the wrapper.
+                shellConfig =
+                  let
+                    raw = shell;
+                    isDerivation = builtins.isAttrs raw && (raw.type or null) == "derivation";
+                    shellType =
+                      if raw == null then "simple"
+                      else if isDerivation then "derivation"
+                      else if builtins.isAttrs raw && (raw.type or raw.kind or null) != null then (raw.type or raw.kind)
+                      else if builtins.isAttrs raw && (raw ? packages || raw ? env || raw ? commands) then "simple"
+                      else if builtins.isString raw then "derivation"
+                      else "simple";
+
+                    toList = value: if builtins.isList value then value else [ value ];
+                    env = if builtins.isAttrs raw && (raw ? env) then raw.env else { };
+                  in
+                  if shellType == "simple" then
+                    shellSpec.simple {
+                      packages = if builtins.isAttrs raw && (raw ? packages) then toList raw.packages else [ ];
+                      env = env;
+                      commands = if builtins.isAttrs raw && (raw ? commands) then toList raw.commands else [ ];
+                    }
+                  else if shellType == "flake" then
+                    shellSpec.fromFlake {
+                      uri = raw.uri;
+                      attr = raw.attr or null;
+                      extraArgs = toList (raw.extraArgs or [ ]);
+                      env = env;
+                    }
+                  else if shellType == "nix-shell" || shellType == "nix-expression" then
+                    shellSpec.fromNixExpression {
+                      expression = raw.expression;
+                      attr = raw.attr or null;
+                      extraArgs = toList (raw.extraArgs or [ ]);
+                      env = env;
+                    }
+                  else if shellType == "derivation" then
+                    {
+                      type = "derivation";
+                      installable =
+                        if builtins.isAttrs raw && (raw ? drvPath) then raw.drvPath else raw;
+                      inherit env;
+                      extraArgs = if builtins.isAttrs raw && (raw ? extraArgs) then toList raw.extraArgs else [ ];
+                    }
+                  else
+                    shellSpec.simple { };
 
               mcpOverlay = self: super: {
                 mcp-sdk-hs = self.callCabal2nix "mcp-sdk-hs" (./mcp-sdk-hs) { };
@@ -111,53 +185,83 @@
 
               staticPkg = pkgs'.haskell.lib.justStaticExecutables haskellPkg;
 
+              # Packages that should always be visible to the wrapper itself (for `nix develop`, etc).
+              wrapperTooling = [ pkgs'.bash pkgs'.coreutils pkgs'.nix ];
+              extraPathPackages = if builtins.isList pathPackages then pathPackages else [ pathPackages ];
+
               shellPackages =
-                let
-                  pkgList = shell.packages or [ ];
-                in
-                if builtins.isList pkgList then pkgList else [ pkgList ];
+                if shellConfig.type == "simple" then shellConfig.packages else [ ];
+              pathPrefix = pkgs'.lib.makeBinPath (wrapperTooling ++ extraPathPackages ++ shellPackages);
 
-              shellEnv = shell.env or { };
-              shellCommands = shell.commands or [ ];
+              shellEnv = shellConfig.env or { };
+              shellCommands =
+                if shellConfig.type == "simple" then (shellConfig.commands or [ ]) else [ ];
 
-              pathPrefix = pkgs'.lib.makeBinPath shellPackages;
               exports = pkgs'.lib.concatMapStringsSep "\n" (entry: entry)
                 (pkgs'.lib.mapAttrsToList (name: value: "export ${name}=${value}") shellEnv);
               commandScript =
                 if shellCommands == [ ] then ""
                 else builtins.concatStringsSep "\n" shellCommands;
 
+              realBinary = pkgs'.writeShellScriptBin "${binaryName}-real" ''
+                exec ${staticPkg}/bin/${binaryName} "$@"
+              '';
+
+              developInstallable =
+                if shellConfig.type == "flake" then
+                  let
+                    uri = toString shellConfig.uri;
+                    attrSuffix = if shellConfig.attr == null then "" else "#${shellConfig.attr}";
+                  in
+                  "${uri}${attrSuffix}"
+                else if shellConfig.type == "nix-expression" then
+                  null
+                else if shellConfig.type == "derivation" then
+                  toString shellConfig.installable
+                else
+                  null;
+
+              developArgs =
+                if shellConfig.type == "nix-expression" then
+                  let
+                    expr = toString shellConfig.expression;
+                    attrArgs = if shellConfig.attr == null then [ ] else [ shellConfig.attr ];
+                  in
+                  [ "develop" "-f" expr ] ++ (shellConfig.extraArgs or [ ]) ++ attrArgs ++ [ "--command" "${realBinary}/bin/${binaryName}-real" ]
+                else if shellConfig.type == "flake" then
+                  [ "develop" ] ++ (shellConfig.extraArgs or [ ]) ++ [ developInstallable "--command" "${realBinary}/bin/${binaryName}-real" ]
+                else if shellConfig.type == "derivation" then
+                  [ "develop" ] ++ (shellConfig.extraArgs or [ ]) ++ [ developInstallable "--command" "${realBinary}/bin/${binaryName}-real" ]
+                else
+                  [ ];
+
               wrapper =
                 pkgs'.writeShellScriptBin binaryName ''
                   ${if pathPrefix == "" then "" else "export PATH=${pathPrefix}:$PATH"}
                   ${exports}
                   ${commandScript}
-                  exec ${staticPkg}/bin/${binaryName} "$@"
+                  if [ "${shellConfig.type}" = "simple" ]; then
+                    exec ${realBinary}/bin/${binaryName}-real "$@"
+                  else
+                    exec ${pkgs'.nix}/bin/nix ${pkgs'.lib.concatStringsSep " " (builtins.map (arg: pkgs'.lib.escapeShellArg arg) developArgs)} "$@"
+                  fi
                 '';
             in
             wrapper;
         in
         {
-          inherit mkMcpServer;
+          inherit mkMcpServer shellSpec;
 
           mkMcpGhcid = args:
             let
               ghcidPkg = args.ghcid;
-              shellConfig = args.shell or { };
-              existingPackages = shellConfig.packages or [ ];
-              packageList =
-                if builtins.isList existingPackages then existingPackages else [ existingPackages ];
-              updatedShell =
-                shellConfig // {
-                  packages = packageList ++ [ ghcidPkg ];
-                };
             in
             mkMcpServer (
               (builtins.removeAttrs args [ "ghcid" ])
               // {
                 packageName = "mcp-ghcid";
                 packageSrc = ./packages/mcp-ghcid;
-                shell = updatedShell;
+                pathPackages = [ ghcidPkg ];
               }
             );
 
@@ -192,6 +296,7 @@
 	                packageName = "mcp-hls";
 	                packageSrc = ./packages/mcp-hls;
 	                shell = updatedShell;
+                  pathPackages = [ hlsPkg ];
 	              }
 	            );
 	        };
