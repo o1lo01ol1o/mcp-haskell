@@ -1,11 +1,26 @@
-model = "gpt-5.1-codex"
+model = "gpt-5.2"
+model_reasoning_effort = "high"
 [mcp_servers.ghcid]
-command = "nix"
-args = ["run", ".#mcp-ghcid", "--", "--log-level", "debug"]
+command = "direnv"
+args = ["exec", ".", "./scripts/run-mcp-ghcid.sh", "--log-level", "warn"]
+startup_timeout_sec = 30
+[mcp_servers.ghcid.env]
+MCP_AUTO_BUILD = "0"
+MCP_LAUNCHER_DEBUG = "0"
+# Codex runs MCP servers under a filesystem sandbox by default; force Cabal to
+# use the repo-local `.cabal/` (gitignored) instead of `~/.cabal`.
+CABAL_DIR = ".cabal"
 
 [mcp_servers.hls]
-command = "nix"
-args = ["run", ".#mcp-hls", "--", "--log-level", "debug"]
+command = "direnv"
+args = ["exec", ".", "./scripts/run-mcp-hls.sh", "--log-level", "debug"]
+startup_timeout_sec = 30
+enabled = false
+[mcp_servers.hls.env]
+MCP_AUTO_BUILD = "0"
+MCP_LAUNCHER_DEBUG = "0"
+# Keep HLS/Cabal state inside the repo when enabled.
+CABAL_DIR = ".cabal"
 
 # OpenAI via Responses API (used for GPT-5)
 [model_providers.openai]
