@@ -30,8 +30,9 @@
 	          ghcPackageSet = pkgs.haskell.packages.ghc912;
 	          mcpGhcidPkg = self.lib.mkMcpGhcid {
 	            inherit system;
+              inherit pkgs;
 	            inherit ghcPackageSet;
-	            ghcid = pkgs.ghcid;
+	            ghcid = ghcPackageSet.ghcid;
 	            shell = {
 	              packages = [
 	                pkgs.cabal-install
@@ -42,6 +43,7 @@
 	          };
 	          mcpHlsPkg = self.lib.mkMcpHls {
 	            inherit system;
+              inherit pkgs;
 	            inherit ghcPackageSet;
 	            shell = {
 	              packages = [
@@ -65,6 +67,7 @@
           nixpkgsLib = inputs.nixpkgs.lib;
 	          mkMcpServer =
 	            { system
+              , pkgs ? null
 	            , packageName
 	            , packageSrc
 	            , shell ? { }
@@ -73,14 +76,18 @@
 	            , ghcPackageSet ? null
 	            }:
 	            let
-	              pkgs = import inputs.nixpkgs {
-	                inherit system;
-	                config.allowUnfree = true;
-	              };
+	              pkgs' =
+                  if pkgs == null then
+                    import inputs.nixpkgs {
+                      inherit system;
+                      config.allowUnfree = true;
+                    }
+                  else
+                    pkgs;
 	
 	              ghcSet =
 	                if ghcPackageSet == null then
-	                  pkgs.haskell.packages.ghc912
+	                  pkgs'.haskell.packages.ghc912
 	                else
 	                  ghcPackageSet;
 
@@ -91,7 +98,7 @@
                   let
                     base = self.callCabal2nix packageName packageSrc { };
                   in
-                  if disableChecks then pkgs.haskell.lib.dontCheck base else base;
+                  if disableChecks then pkgs'.haskell.lib.dontCheck base else base;
               };
 
 	              haskellPkgs = ghcSet.override {
@@ -102,7 +109,7 @@
                 if builtins.hasAttr packageName haskellPkgs then haskellPkgs.${packageName}
                 else throw "mkMcpServer: expected package not found in Haskell overlay";
 
-              staticPkg = pkgs.haskell.lib.justStaticExecutables haskellPkg;
+              staticPkg = pkgs'.haskell.lib.justStaticExecutables haskellPkg;
 
               shellPackages =
                 let
@@ -113,15 +120,15 @@
               shellEnv = shell.env or { };
               shellCommands = shell.commands or [ ];
 
-              pathPrefix = pkgs.lib.makeBinPath shellPackages;
-              exports = pkgs.lib.concatMapStringsSep "\n" (entry: entry)
-                (pkgs.lib.mapAttrsToList (name: value: "export ${name}=${value}") shellEnv);
+              pathPrefix = pkgs'.lib.makeBinPath shellPackages;
+              exports = pkgs'.lib.concatMapStringsSep "\n" (entry: entry)
+                (pkgs'.lib.mapAttrsToList (name: value: "export ${name}=${value}") shellEnv);
               commandScript =
                 if shellCommands == [ ] then ""
                 else builtins.concatStringsSep "\n" shellCommands;
 
               wrapper =
-                pkgs.writeShellScriptBin binaryName ''
+                pkgs'.writeShellScriptBin binaryName ''
                   ${if pathPrefix == "" then "" else "export PATH=${pathPrefix}:$PATH"}
                   ${exports}
                   ${commandScript}
@@ -156,10 +163,14 @@
 
 	          mkMcpHls = args:
 	            let
-	              pkgs = import inputs.nixpkgs {
-	                inherit (args) system;
-	                config.allowUnfree = true;
-	              };
+	              pkgs =
+                  if builtins.hasAttr "pkgs" args && args.pkgs != null then
+                    args.pkgs
+                  else
+                    import inputs.nixpkgs {
+                      inherit (args) system;
+                      config.allowUnfree = true;
+                    };
 	              ghcSet = args.ghcPackageSet or pkgs.haskell.packages.ghc912;
 	              hlsPkg =
 	                if builtins.hasAttr "haskell-language-server" ghcSet then

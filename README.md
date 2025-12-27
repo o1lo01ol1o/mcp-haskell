@@ -41,6 +41,8 @@ This project provides two main MCP servers:
         # Create mcp-ghcid with your project's ghcid
         mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
           inherit system;
+          inherit pkgs;
+          ghcPackageSet = haskellPackages;
           ghcid = my-ghcid;
         };
       };
@@ -71,6 +73,8 @@ This project provides two main MCP servers:
       packages.${system} = {
         mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
           inherit system;
+          inherit pkgs;
+          ghcPackageSet = myHaskellPackages;
           ghcid = my-ghcid;
         };
         
