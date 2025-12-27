@@ -32,6 +32,7 @@ import System.IO
   , hFlush
   , hSetBuffering
   , openFile
+  , openTempFile
   , stderr
   )
 import System.IO.Unsafe (unsafePerformIO)
@@ -75,9 +76,10 @@ acquireLoggingTarget = do
     Nothing -> acquireDefault `catch` fallback
 
   catch (createDirectoryIfMissing True (takeDirectory path)) fallbackDir
-  handle <- catch (openFile path AppendMode) fallbackOpen
-  hSetBuffering handle LineBuffering
-  alsoStderr <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
+  handle <- openWithFallback path
+  safeSetLineBuffering handle
+  alsoStderrRequested <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
+  let alsoStderr = alsoStderrRequested && handle /= stderr
   pure LoggingTarget { targetHandle = handle, targetAlsoStderr = alsoStderr }
 
   where
@@ -87,8 +89,32 @@ acquireLoggingTarget = do
     fallbackDir :: IOException -> IO ()
     fallbackDir _ = pure ()
 
-    fallbackOpen :: IOException -> IO Handle
-    fallbackOpen _ = openFile "/tmp/mcp-hls.log" AppendMode
+    openWithFallback :: FilePath -> IO Handle
+    openWithFallback requestedPath = do
+      primary <- tryOpen (openFile requestedPath AppendMode)
+      case primary of
+        Just h -> pure h
+        Nothing -> do
+          fallback1 <- tryOpen (openFile "/tmp/mcp-hls.log" AppendMode)
+          case fallback1 of
+            Just h -> pure h
+            Nothing -> do
+              tmpDir <- getXdgDirectory XdgCache "mcp-hls" `catch` ignoreIOException "/tmp"
+              createDirectoryIfMissing True tmpDir `catch` ignoreIOException ()
+              tmp <- (Just <$> openTempFile tmpDir "mcp-hls.log") `catch` ignoreIOException Nothing
+              case tmp of
+                Just (_fp, h) -> pure h
+                Nothing -> pure stderr
+
+    tryOpen :: IO Handle -> IO (Maybe Handle)
+    tryOpen action = (Just <$> action) `catch` ignoreIOException Nothing
+
+    safeSetLineBuffering :: Handle -> IO ()
+    safeSetLineBuffering h =
+      hSetBuffering h LineBuffering `catch` ignoreIOException ()
+
+    ignoreIOException :: a -> IOException -> IO a
+    ignoreIOException fallbackValue _ = pure fallbackValue
 
 -- | Write a formatted message to the active targets.
 logMessage :: LogLevel -> Text -> IO ()

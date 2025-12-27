@@ -11,7 +11,7 @@ module Utils.Logging
   , logError
   ) where
 
-import Control.Exception (IOException, catch)
+import Control.Exception (IOException, catch, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicWriteIORef, newIORef, readIORef)
 import Data.Maybe (isJust)
@@ -28,6 +28,7 @@ import System.IO
   , hFlush
   , hSetBuffering
   , openFile
+  , openTempFile
   , stderr
   )
 import System.IO.Unsafe (unsafePerformIO)
@@ -76,15 +77,41 @@ acquireLoggingTarget = do
 
   ensureDir `catch` fallbackDir
 
-  let openPrimary :: IO Handle
-      openPrimary = openFile path AppendMode
-      fallbackOpen :: IOException -> IO Handle
-      fallbackOpen _ = openFile "/tmp/mcp-hls.log" AppendMode
-
-  handle <- openPrimary `catch` fallbackOpen
-  hSetBuffering handle LineBuffering
-  alsoStderr <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
+  handle <- openWithFallback path
+  safeSetLineBuffering handle
+  alsoStderrRequested <- fmap isJust (lookupEnv "MCP_LOG_STDERR")
+  let alsoStderr = alsoStderrRequested && handle /= stderr
   pure LoggingTarget { targetHandle = handle, targetAlsoStderr = alsoStderr }
+  where
+    openWithFallback :: FilePath -> IO Handle
+    openWithFallback requestedPath = do
+      primary <- try (openFile requestedPath AppendMode) :: IO (Either IOException Handle)
+      case primary of
+        Right h -> pure h
+        Left _ -> do
+          fallback <- try (openFile "/tmp/mcp-hls.log" AppendMode) :: IO (Either IOException Handle)
+          case fallback of
+            Right h -> pure h
+            Left _ -> do
+              tmpDirResult <- try getXdgTempDir :: IO (Either IOException FilePath)
+              case tmpDirResult of
+                Right tmpDir -> do
+                  tmp <- try (openTempFile tmpDir "mcp-hls.log") :: IO (Either IOException (FilePath, Handle))
+                  case tmp of
+                    Right (_fp, h) -> pure h
+                    Left _ -> pure stderr
+                Left _ -> pure stderr
+
+    -- Prefer XDG temp when available; fallback to /tmp.
+    getXdgTempDir :: IO FilePath
+    getXdgTempDir = pure "/tmp"
+
+    safeSetLineBuffering :: Handle -> IO ()
+    safeSetLineBuffering h =
+      hSetBuffering h LineBuffering `catch` ignoreIOException
+
+    ignoreIOException :: IOException -> IO ()
+    ignoreIOException _ = pure ()
 
 -- | Core logging primitive.
 logMessage :: LogLevel -> Text -> IO ()

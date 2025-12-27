@@ -79,6 +79,7 @@ import Data.Aeson.KeyMap (insert)
 import Data.Aeson.Types (Parser, typeMismatch)
 import Data.Hashable (Hashable (..))
 import Data.Map.Strict (Map)
+import Data.Maybe (catMaybes)
 import Data.Scientific (floatingOrInteger)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -573,7 +574,7 @@ instance FromJSON ClientRootsCapability where
 
 instance ToJSON ClientRootsCapability where
   toJSON (ClientRootsCapability listChanged) =
-    object ["listChanged" .= listChanged]
+    object $ maybe [] (\v -> ["listChanged" .= v]) listChanged
 
 instance FromJSON ClientCapabilities where
   parseJSON = withObject "ClientCapabilities" $ \o ->
@@ -585,12 +586,13 @@ instance FromJSON ClientCapabilities where
 
 instance ToJSON ClientCapabilities where
   toJSON (ClientCapabilities elicitation experimental roots sampling) =
-    object
-      [ "elicitation" .= elicitation,
-        "experimental" .= experimental,
-        "roots" .= roots,
-        "sampling" .= sampling
-      ]
+    object $
+      catMaybes
+        [ fmap ("elicitation" .=) elicitation,
+          fmap ("experimental" .=) experimental,
+          fmap ("roots" .=) roots,
+          fmap ("sampling" .=) sampling
+        ]
 
 instance FromJSON ToolsCapability where
   parseJSON = withObject "ToolsCapability" $ \o ->
@@ -598,7 +600,7 @@ instance FromJSON ToolsCapability where
 
 instance ToJSON ToolsCapability where
   toJSON (ToolsCapability listChanges) =
-    object ["listChanged" .= listChanges]
+    object $ maybe [] (\v -> ["listChanged" .= v]) listChanges
 
 instance FromJSON ResourcesCapability where
   parseJSON = withObject "ResourcesCapability" $ \o ->
@@ -608,10 +610,11 @@ instance FromJSON ResourcesCapability where
 
 instance ToJSON ResourcesCapability where
   toJSON (ResourcesCapability subscribe listChanges) =
-    object
-      [ "subscribe" .= subscribe,
-        "listChanged" .= listChanges
-      ]
+    object $
+      catMaybes
+        [ fmap ("subscribe" .=) subscribe,
+          fmap ("listChanged" .=) listChanges
+        ]
 
 instance FromJSON PromptsCapability where
   parseJSON = withObject "PromptsCapability" $ \o ->
@@ -619,7 +622,7 @@ instance FromJSON PromptsCapability where
 
 instance ToJSON PromptsCapability where
   toJSON (PromptsCapability listChanges) =
-    object ["listChanged" .= listChanges]
+    object $ maybe [] (\v -> ["listChanged" .= v]) listChanges
 
 instance FromJSON LoggingCapability where
   parseJSON = withObject "LoggingCapability" $ \_ -> pure LoggingCapability

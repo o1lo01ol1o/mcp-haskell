@@ -17,6 +17,7 @@ module MCP.SDK.Server.API
 where
 
 import Control.Concurrent.STM (atomically, modifyTVar', newEmptyTMVarIO, readTVarIO, takeTMVar)
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
 import Data.Aeson (Result (..), fromJSON, object, toJSON)
@@ -34,6 +35,7 @@ import MCP.SDK.Protocol
 import MCP.SDK.Server.Monad
   ( ServerEnv (..),
     ServerM,
+    ServerState (..),
   )
 import MCP.SDK.Server.State
   ( RegisteredPrompt (..),
@@ -133,12 +135,17 @@ sendResourceListChanged = sendListChanged "resources/listChanged"
 sendListChanged :: Text -> ServerM ()
 sendListChanged method = do
   env <- ask
-  -- Use case expression to extract transport from GADT
-  case env of
-    ServerEnv transport _ _ _ _ _ _ _ _ -> do
-      let notification = JSONRPCNotification $ JSONRPCNotificationMessage method (object [])
-      _ <- liftIO $ sendMessage transport notification
-      return ()
+  ready <- liftIO $ do
+    state <- readTVarIO (serverState env)
+    return $ case state of
+      ServerReady _ _ -> True
+      _ -> False
+  when ready $
+    case env of
+      ServerEnv transport _ _ _ _ _ _ _ _ -> do
+        let notification = JSONRPCNotification $ JSONRPCNotificationMessage method (object [])
+        _ <- liftIO $ sendMessage transport notification
+        return ()
 
 -- | Sends a `sampling/createMessage` request to the client and awaits a response.
 createMessage :: CreateMessageRequest -> ServerM (Either MCPError CreateMessageResponse)
