@@ -14,3 +14,6 @@ log
 skeleton.out
 command.out
 .cabal
+.codex/skills/
+_err
+_mcp_ghcid_stderr
