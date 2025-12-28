@@ -38,7 +38,14 @@ This project provides two main MCP servers:
       
     in {
       packages.${system} = {
-        # Create mcp-ghcid with your project's ghcid
+        # If you launch via `nix develop ... --command mcp-ghcid`, prefer the binary-only output.
+        mcp-ghcid-bin = mcp-hls.lib.mkMcpGhcidBinary {
+          inherit system;
+          inherit pkgs;
+          ghcPackageSet = haskellPackages;
+        };
+
+        # Or: create a wrapper that injects your project's `ghcid` onto PATH
         mcp-ghcid = mcp-hls.lib.mkMcpGhcid {
           inherit system;
           inherit pkgs;

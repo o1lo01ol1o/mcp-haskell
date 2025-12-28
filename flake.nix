@@ -98,6 +98,7 @@
 	            , packageSrc
 	            , shell ? null
               , pathPackages ? [ ]
+              , wrap ? true
 	            , binaryName ? packageName
 	            , disableChecks ? false
 	            , ghcPackageSet ? null
@@ -122,13 +123,10 @@
                 shellConfig =
                   let
                     raw = shell;
-                    isDerivation = builtins.isAttrs raw && (raw.type or null) == "derivation";
                     shellType =
                       if raw == null then "simple"
-                      else if isDerivation then "derivation"
                       else if builtins.isAttrs raw && (raw.type or raw.kind or null) != null then (raw.type or raw.kind)
                       else if builtins.isAttrs raw && (raw ? packages || raw ? env || raw ? commands) then "simple"
-                      else if builtins.isString raw then "derivation"
                       else "simple";
 
                     toList = value: if builtins.isList value then value else [ value ];
@@ -154,14 +152,6 @@
                       extraArgs = toList (raw.extraArgs or [ ]);
                       env = env;
                     }
-                  else if shellType == "derivation" then
-                    {
-                      type = "derivation";
-                      installable =
-                        if builtins.isAttrs raw && (raw ? drvPath) then raw.drvPath else raw;
-                      inherit env;
-                      extraArgs = if builtins.isAttrs raw && (raw ? extraArgs) then toList raw.extraArgs else [ ];
-                    }
                   else
                     shellSpec.simple { };
 
@@ -185,69 +175,72 @@
 
               staticPkg = pkgs'.haskell.lib.justStaticExecutables haskellPkg;
 
-              # Packages that should always be visible to the wrapper itself (for `nix develop`, etc).
-              wrapperTooling = [ pkgs'.bash pkgs'.coreutils pkgs'.nix ];
-              extraPathPackages = if builtins.isList pathPackages then pathPackages else [ pathPackages ];
-
-              shellPackages =
-                if shellConfig.type == "simple" then shellConfig.packages else [ ];
-              pathPrefix = pkgs'.lib.makeBinPath (wrapperTooling ++ extraPathPackages ++ shellPackages);
-
-              shellEnv = shellConfig.env or { };
-              shellCommands =
-                if shellConfig.type == "simple" then (shellConfig.commands or [ ]) else [ ];
-
-              exports = pkgs'.lib.concatMapStringsSep "\n" (entry: entry)
-                (pkgs'.lib.mapAttrsToList (name: value: "export ${name}=${value}") shellEnv);
-              commandScript =
-                if shellCommands == [ ] then ""
-                else builtins.concatStringsSep "\n" shellCommands;
-
-              realBinary = pkgs'.writeShellScriptBin "${binaryName}-real" ''
-                exec ${staticPkg}/bin/${binaryName} "$@"
-              '';
-
-              developInstallable =
-                if shellConfig.type == "flake" then
-                  let
-                    uri = toString shellConfig.uri;
-                    attrSuffix = if shellConfig.attr == null then "" else "#${shellConfig.attr}";
-                  in
-                  "${uri}${attrSuffix}"
-                else if shellConfig.type == "nix-expression" then
-                  null
-                else if shellConfig.type == "derivation" then
-                  toString shellConfig.installable
+              # `wrap = false` exposes only the built executable(s), with no shell-wrapping logic.
+              _maybeWrapped =
+                if wrap == false then
+                  staticPkg
                 else
-                  null;
-
-              developArgs =
-                if shellConfig.type == "nix-expression" then
                   let
-                    expr = toString shellConfig.expression;
-                    attrArgs = if shellConfig.attr == null then [ ] else [ shellConfig.attr ];
-                  in
-                  [ "develop" "-f" expr ] ++ (shellConfig.extraArgs or [ ]) ++ attrArgs ++ [ "--command" "${realBinary}/bin/${binaryName}-real" ]
-                else if shellConfig.type == "flake" then
-                  [ "develop" ] ++ (shellConfig.extraArgs or [ ]) ++ [ developInstallable "--command" "${realBinary}/bin/${binaryName}-real" ]
-                else if shellConfig.type == "derivation" then
-                  [ "develop" ] ++ (shellConfig.extraArgs or [ ]) ++ [ developInstallable "--command" "${realBinary}/bin/${binaryName}-real" ]
-                else
-                  [ ];
+                    needsNix = shellConfig.type != "simple";
+                    wrapperTooling =
+                      if needsNix then [ pkgs'.bash pkgs'.coreutils pkgs'.nix ] else [ pkgs'.bash pkgs'.coreutils ];
+                    extraPathPackages = if builtins.isList pathPackages then pathPackages else [ pathPackages ];
 
-              wrapper =
-                pkgs'.writeShellScriptBin binaryName ''
-                  ${if pathPrefix == "" then "" else "export PATH=${pathPrefix}:$PATH"}
-                  ${exports}
-                  ${commandScript}
-                  if [ "${shellConfig.type}" = "simple" ]; then
-                    exec ${realBinary}/bin/${binaryName}-real "$@"
-                  else
-                    exec ${pkgs'.nix}/bin/nix ${pkgs'.lib.concatStringsSep " " (builtins.map (arg: pkgs'.lib.escapeShellArg arg) developArgs)} "$@"
-                  fi
-                '';
+                    shellPackages =
+                      if shellConfig.type == "simple" then shellConfig.packages else [ ];
+                    pathPrefix = pkgs'.lib.makeBinPath (wrapperTooling ++ extraPathPackages ++ shellPackages);
+
+                    shellEnv = shellConfig.env or { };
+                    shellCommands =
+                      if shellConfig.type == "simple" then (shellConfig.commands or [ ]) else [ ];
+
+                    exports = pkgs'.lib.concatMapStringsSep "\n" (entry: entry)
+                      (pkgs'.lib.mapAttrsToList (name: value: "export ${name}=${value}") shellEnv);
+                    commandScript =
+                      if shellCommands == [ ] then ""
+                      else builtins.concatStringsSep "\n" shellCommands;
+
+                    realBinary = pkgs'.writeShellScriptBin "${binaryName}-real" ''
+                      exec ${staticPkg}/bin/${binaryName} "$@"
+                    '';
+
+                    developInstallable =
+                      if shellConfig.type == "flake" then
+                        let
+                          uri = toString shellConfig.uri;
+                          attrSuffix = if shellConfig.attr == null then "" else "#${shellConfig.attr}";
+                        in
+                        "${uri}${attrSuffix}"
+                      else
+                        null;
+
+                    developArgs =
+                      if shellConfig.type == "nix-expression" then
+                        let
+                          expr = toString shellConfig.expression;
+                          attrArgs = if shellConfig.attr == null then [ ] else [ shellConfig.attr ];
+                        in
+                        [ "develop" "-f" expr ] ++ (shellConfig.extraArgs or [ ]) ++ attrArgs ++ [ "--command" "${realBinary}/bin/${binaryName}-real" ]
+                      else if shellConfig.type == "flake" then
+                        [ "develop" ] ++ (shellConfig.extraArgs or [ ]) ++ [ developInstallable "--command" "${realBinary}/bin/${binaryName}-real" ]
+                      else
+                        [ ];
+
+                    wrapper =
+                      pkgs'.writeShellScriptBin binaryName ''
+                        ${if pathPrefix == "" then "" else "export PATH=${pathPrefix}:$PATH"}
+                        ${exports}
+                        ${commandScript}
+                        if [ "${shellConfig.type}" = "simple" ]; then
+                          exec ${realBinary}/bin/${binaryName}-real "$@"
+                        else
+                          exec ${pkgs'.nix}/bin/nix ${pkgs'.lib.concatStringsSep " " (builtins.map (arg: pkgs'.lib.escapeShellArg arg) developArgs)} "$@"
+                        fi
+                      '';
+                  in
+                  wrapper;
             in
-            wrapper;
+            _maybeWrapped;
         in
         {
           inherit mkMcpServer shellSpec;
@@ -262,6 +255,17 @@
                 packageName = "mcp-ghcid";
                 packageSrc = ./packages/mcp-ghcid;
                 pathPackages = [ ghcidPkg ];
+              }
+            );
+
+          # Build only the `mcp-ghcid` executable (no wrapper, no shell logic).
+          mkMcpGhcidBinary = args:
+            mkMcpServer (
+              (builtins.removeAttrs args [ "ghcid" "shell" "pathPackages" ])
+              // {
+                packageName = "mcp-ghcid";
+                packageSrc = ./packages/mcp-ghcid;
+                wrap = false;
               }
             );
 
@@ -299,6 +303,17 @@
                   pathPackages = [ hlsPkg ];
 	              }
 	            );
+
+          # Build only the `mcp-hls` executable (no wrapper, no shell logic).
+          mkMcpHlsBinary = args:
+            mkMcpServer (
+              (builtins.removeAttrs args [ "hls" "shell" "pathPackages" ])
+              // {
+                packageName = "mcp-hls";
+                packageSrc = ./packages/mcp-hls;
+                wrap = false;
+              }
+            );
 	        };
 
       devShells = forEachSystem (
