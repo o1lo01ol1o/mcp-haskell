@@ -154,6 +154,14 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - `ghcid-clear` – Clear messages from a ghcid process
 - `ghcid-list` – List all active ghcid processes
 
+**`.mcp-cache` and `workDir`**
+
+`ghcid-start`/`ghcid-restart` will create `.mcp-cache/` in a couple of scenarios:
+
+- For the default `cabal repl` command (i.e. when you do *not* set `options.command`), `mcp-ghcid` injects `--builddir <workDir>/.mcp-cache/cabal-build/...` and creates that directory. This means `.mcp-cache` will appear wherever you point `workDir`.
+- If you pass a relative `workDir` (like `"."`), it is resolved relative to the server process’s current working directory, which can be surprising in sandboxes/wrappers; prefer an absolute `workDir`.
+- To prevent `mcp-ghcid` from creating `<workDir>/.mcp-cache/cabal-build/...`, set `options.command` to include an explicit `--builddir` (or use a non-`cabal repl` command entirely).
+
 **Message filtering**
 
 `ghcid-messages` accepts an optional `filter` object allowing servers or clients to focus on relevant diagnostics.

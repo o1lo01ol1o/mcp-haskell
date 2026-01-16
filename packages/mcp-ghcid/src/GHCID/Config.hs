@@ -52,6 +52,7 @@ defaultServerConfig = GHCIDServerConfig
   , instructionsMessage = T.unlines
       [ "Use `ghcid-start` to launch or restart a ghcid session for your project."
       , "Optionally provide a `component` (for example lib:mypkg or exe:tool) if you need a specific Cabal target."
+      , "Note: default `cabal repl` invocations isolate build artifacts under <workDir>/.mcp-cache/cabal-build/; include an explicit `--builddir` in `options.command` to override."
       , "Changes to `.cabal` files require running `ghcid-restart` so ghcid reloads the build plan."
       , "If you change the project environment (for example nix-shell or GHC version), restart the `mcp-ghcid` server itself."
       ]

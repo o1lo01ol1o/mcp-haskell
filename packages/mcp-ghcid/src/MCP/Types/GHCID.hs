@@ -378,7 +378,9 @@ ghcidTools :: [Tool]
 ghcidTools =
   [ Tool
       { toolNameField = "ghcid-start",
-        toolDescription = Just "Start a new ghcid process for monitoring a Haskell project",
+        toolDescription =
+          Just
+            "Start a new ghcid process for monitoring a Haskell project (default cabal repl uses an isolated --builddir under <workDir>/.mcp-cache/cabal-build/; prefer absolute workDir)",
         toolInputSchema =
           KM.fromList
             [ ("type", toJSON ("object" :: Text)),
@@ -396,7 +398,12 @@ ghcidTools =
                         toJSON $
                           KM.fromList
                             [ ("type", toJSON ("string" :: Text)),
-                              ("description", toJSON ("Working directory for the project" :: Text))
+                              ( "description",
+                                toJSON
+                                  ( "Working directory for the project; the default cabal repl build artifacts go under <workDir>/.mcp-cache/cabal-build/ (prefer an absolute path)"
+                                      :: Text
+                                  )
+                              )
                             ]
                       ),
                       ( "component",
