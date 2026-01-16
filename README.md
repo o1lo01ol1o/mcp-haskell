@@ -101,10 +101,11 @@ This project provides two main MCP servers:
 
 ```bash
 # Build mcp-ghcid (this repo)
-nix build .#mcp-ghcid -o .mcp-cache/mcp-ghcid
+CACHE_ROOT="${MCP_CACHE_DIR:-${TMPDIR:-/tmp}/mcp-cache}"
+nix build .#mcp-ghcid -o "$CACHE_ROOT/mcp-ghcid"
 
 # Run it
-.mcp-cache/mcp-ghcid/bin/mcp-ghcid --help
+"$CACHE_ROOT/mcp-ghcid/bin/mcp-ghcid" --help
 
 # Or install to profile
 nix profile install .#mcp-ghcid
@@ -143,7 +144,7 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - Compiler error and warning reporting
 - Process management with graceful shutdown
 - Comprehensive filtering and message formatting (`output` + `lines` are returned)
-- Default `cabal repl` invocations use a per-project `--builddir` under `.mcp-cache/cabal-build/` to avoid `dist-newstyle` races when multiple sessions run concurrently in a monorepo
+- Default `cabal repl` invocations use a per-project `--builddir` under `$TMPDIR/mcp-cache/cabal-build/` (or `MCP_CACHE_DIR`) to avoid `dist-newstyle` races when multiple sessions run concurrently in a monorepo
 
 **Available MCP Tools:**
 - `ghcid-start` – Start a new ghcid process for a project (automatically runs `cabal repl <package>` based on the supplied `.cabal` file or directory; override via `options.command` if you need something custom, or pass `component` to target a specific Cabal component)
@@ -154,13 +155,13 @@ A static executable that provides MCP integration for GHCID (GHCi daemon).
 - `ghcid-clear` – Clear messages from a ghcid process
 - `ghcid-list` – List all active ghcid processes
 
-**`.mcp-cache` and `workDir`**
+**Cache location and `workDir`**
 
-`ghcid-start`/`ghcid-restart` will create `.mcp-cache/` in a couple of scenarios:
+`ghcid-start`/`ghcid-restart` create Cabal build directories under a deterministic temp path by default.
 
-- For the default `cabal repl` command (i.e. when you do *not* set `options.command`), `mcp-ghcid` injects `--builddir <workDir>/.mcp-cache/cabal-build/...` and creates that directory. This means `.mcp-cache` will appear wherever you point `workDir`.
-- If you pass a relative `workDir` (like `"."`), it is resolved relative to the server process’s current working directory, which can be surprising in sandboxes/wrappers; prefer an absolute `workDir`.
-- To prevent `mcp-ghcid` from creating `<workDir>/.mcp-cache/cabal-build/...`, set `options.command` to include an explicit `--builddir` (or use a non-`cabal repl` command entirely).
+- For the default `cabal repl` command (i.e. when you do *not* set `options.command`), `mcp-ghcid` injects `--builddir $TMPDIR/mcp-cache/cabal-build/...` (or `MCP_CACHE_DIR`) and creates that directory.
+- This cache location is independent of `workDir`, which still controls the ghcid process working directory.
+- To prevent `mcp-ghcid` from creating the default temp build directory, set `options.command` to include an explicit `--builddir` (or use a non-`cabal repl` command entirely).
 
 **Message filtering**
 
@@ -267,7 +268,7 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 
   This pattern works with recent Codex CLI versions because the servers support both newline-delimited JSON and `Content-Length` stdio framing.
 
-- **Codex via `direnv exec` (recommended when Codex is sandboxed)**: some Codex sandbox policies prevent writes to `$HOME`, which can break `cabal`/`ghcid` (and can also make `nix develop` fail if Nix needs to write caches). If your repo already uses `direnv` + `use flake`, prefer launching via `direnv exec` so the server inherits the fully-materialized dev environment while keeping all build artifacts inside the workspace:
+- **Codex via `direnv exec` (recommended when Codex is sandboxed)**: some Codex sandbox policies prevent writes to `$HOME`, which can break `cabal`/`ghcid` (and can also make `nix develop` fail if Nix needs to write caches). If your repo already uses `direnv` + `use flake`, prefer launching via `direnv exec` so the server inherits the fully-materialized dev environment; if you need caches inside the workspace, set `MCP_CACHE_DIR` to a workspace path.
 
   ```toml
   [mcp_servers.ghcid]
@@ -276,6 +277,8 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 
   [mcp_servers.ghcid.env]
   CABAL_DIR = ".cabal"
+  # Optional: keep ghcid's build cache inside the workspace instead of $TMPDIR
+  # MCP_CACHE_DIR = ".codex/cache"
   ```
 
 - **Customize behaviour**: supply a JSON config via `--config path/to/config.json` to override defaults (e.g. `instructionsMessage`, `retentionPolicy`, `maxConcurrentProcesses`). The built-in auto-discovery falls back to the current working directory when no config file is provided.

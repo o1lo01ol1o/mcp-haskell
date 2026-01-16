@@ -162,7 +162,7 @@ registerGHCIDTools ghcidState = do
                 { toolNameField = "ghcid-start",
                   toolDescription =
                     Just
-                      "Start a new GHCID process for a Haskell project (default cabal repl uses an isolated --builddir under <work_dir>/.mcp-cache/cabal-build/; prefer absolute work_dir)",
+                      "Start a new GHCID process for a Haskell project (default cabal repl uses an isolated --builddir under $TMPDIR/mcp-cache/cabal-build/ or MCP_CACHE_DIR; prefer absolute work_dir)",
                   toolInputSchema =
                     case object
                       [ "type" .= ("object" :: Text),
@@ -177,7 +177,7 @@ registerGHCIDTools ghcidState = do
                                 .= object
                                   [ "type" .= ("string" :: Text),
                                     "description"
-                                      .= ( "Working directory for the GHCID process; the default cabal repl build artifacts go under <work_dir>/.mcp-cache/cabal-build/ (prefer an absolute path)"
+                                      .= ( "Working directory for the GHCID process; the default cabal repl build artifacts go under $TMPDIR/mcp-cache/cabal-build/ (or MCP_CACHE_DIR)"
                                             :: Text
                                          )
                                   ],
@@ -190,7 +190,7 @@ registerGHCIDTools ghcidState = do
                                 .= object
                                   [ "type" .= ("object" :: Text),
                                     "description"
-                                      .= ( "Additional GHCID options (set options.command to include an explicit --builddir to override <work_dir>/.mcp-cache/cabal-build/)"
+                                      .= ( "Additional GHCID options (set options.command to include an explicit --builddir to override the default temp cache location)"
                                             :: Text
                                          )
                                   ]
@@ -246,7 +246,7 @@ registerGHCIDTools ghcidState = do
                 { toolNameField = "ghcid-restart",
                   toolDescription =
                     Just
-                      "Restart a GHCID process (default cabal repl uses an isolated --builddir under <work_dir>/.mcp-cache/cabal-build/ when work_dir is provided/derived)",
+                      "Restart a GHCID process (default cabal repl uses an isolated --builddir under $TMPDIR/mcp-cache/cabal-build/ or MCP_CACHE_DIR when work_dir is provided/derived)",
                   toolInputSchema =
                     case object
                       [ "type" .= ("object" :: Text),
@@ -261,7 +261,7 @@ registerGHCIDTools ghcidState = do
                                 .= object
                                   [ "type" .= ("string" :: Text),
                                     "description"
-                                      .= ( "New working directory (optional); if omitted, the previous/derived work dir is used, and the default cabal repl build artifacts go under <work_dir>/.mcp-cache/cabal-build/"
+                                      .= ( "New working directory (optional); if omitted, the previous/derived work dir is used, and the default cabal repl build artifacts go under $TMPDIR/mcp-cache/cabal-build/ (or MCP_CACHE_DIR)"
                                             :: Text
                                          )
                                   ],

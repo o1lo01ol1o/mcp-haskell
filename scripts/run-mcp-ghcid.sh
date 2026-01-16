@@ -6,15 +6,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
-# Cache the built output in a project-local directory to avoid rebuilding on every launch.
-# Avoid `.codex/` because Codex may mount it read-only for spawned tools.
-CACHE_ROOT="${MCP_CACHE_DIR:-.mcp-cache}"
+# Cache the built output in temp by default to avoid touching the repo.
+# Override with MCP_CACHE_DIR (absolute paths recommended).
+TMP_BASE="${TMPDIR:-/tmp}"
+CACHE_ROOT="${MCP_CACHE_DIR:-$TMP_BASE/mcp-cache}"
 if [[ "$CACHE_ROOT" != /* ]]; then
-  CACHE_ROOT="$REPO_ROOT/$CACHE_ROOT"
+  CACHE_ROOT="$TMP_BASE/$CACHE_ROOT"
 fi
 CACHE_LINK="$CACHE_ROOT/mcp-ghcid"
 
-TMP_BASE="${TMPDIR:-/tmp}"
 if [[ -z "${MCP_LOG_FILE:-}" ]]; then
   LOG_DIR="$CACHE_ROOT/log"
   if /bin/mkdir -p "$LOG_DIR" 2>/dev/null; then

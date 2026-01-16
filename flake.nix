@@ -340,22 +340,25 @@
                 };
                 scripts."rebuild-mcp-ghcid".exec = ''
                   set -euo pipefail
-                  mkdir -p .mcp-cache
-                  rm -rf .mcp-cache/mcp-ghcid
-                  nix build .#mcp-ghcid -o .mcp-cache/mcp-ghcid
+                  CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
+                  mkdir -p "$CACHE_ROOT"
+                  rm -rf "$CACHE_ROOT/mcp-ghcid"
+                  nix build .#mcp-ghcid -o "$CACHE_ROOT/mcp-ghcid"
                 '';
                 scripts."rebuild-mcp-hls".exec = ''
                   set -euo pipefail
-                  mkdir -p .mcp-cache
-                  rm -rf .mcp-cache/mcp-hls
-                  nix build .#mcp-hls -o .mcp-cache/mcp-hls
+                  CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
+                  mkdir -p "$CACHE_ROOT"
+                  rm -rf "$CACHE_ROOT/mcp-hls"
+                  nix build .#mcp-hls -o "$CACHE_ROOT/mcp-hls"
                 '';
                 scripts."rebuild-mcp-all".exec = ''
                   set -euo pipefail
-                  mkdir -p .mcp-cache
-                  rm -rf .mcp-cache/mcp-ghcid .mcp-cache/mcp-hls
-                  nix build .#mcp-ghcid -o .mcp-cache/mcp-ghcid
-                  nix build .#mcp-hls -o .mcp-cache/mcp-hls
+                  CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
+                  mkdir -p "$CACHE_ROOT"
+                  rm -rf "$CACHE_ROOT/mcp-ghcid" "$CACHE_ROOT/mcp-hls"
+                  nix build .#mcp-ghcid -o "$CACHE_ROOT/mcp-ghcid"
+                  nix build .#mcp-hls -o "$CACHE_ROOT/mcp-hls"
                 '';
                 enterShell = ''
                   hello

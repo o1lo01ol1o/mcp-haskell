@@ -30,7 +30,8 @@ import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import Data.Time (getCurrentTime)
 import qualified Data.Vector as V
-import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getTemporaryDirectory, listDirectory)
+import System.Environment (lookupEnv)
 import System.FilePath (dropTrailingPathSeparator, isAbsolute, takeDirectory, takeExtension, takeFileName, (</>))
 import GHCID.Filter (applyShellFilter)
 import GHCID.ProcessRegistry (CabalURI (..), GHCIDStatus (..), ProcessRegistry)
@@ -469,11 +470,22 @@ normalizeStartOptions (Just StartGHCIDOptions {..}) = (startCommandSpec, startAd
 --
 -- This only applies when the caller did not explicitly override the command.
 addIsolatedBuildDir :: FilePath -> CabalURI -> CommandSpec -> IO CommandSpec
-addIsolatedBuildDir workDir cabalURI spec = do
+addIsolatedBuildDir _workDir cabalURI spec = do
+  cacheRoot <- resolveCacheRoot
   let buildDirName = "cabal-build-" <> show (abs (hash (getCabalURI cabalURI)))
-      buildDir = workDir </> ".mcp-cache" </> "cabal-build" </> buildDirName
+      buildDir = cacheRoot </> "cabal-build" </> buildDirName
   createDirectoryIfMissing True buildDir
   pure $ injectBuildDirArg buildDir spec
+
+resolveCacheRoot :: IO FilePath
+resolveCacheRoot = do
+  tmpBase <- getTemporaryDirectory
+  override <- lookupEnv "MCP_CACHE_DIR"
+  pure $ case override of
+    Nothing -> tmpBase </> "mcp-cache"
+    Just path
+      | isAbsolute path -> path
+      | otherwise -> tmpBase </> path
 
 injectBuildDirArg :: FilePath -> CommandSpec -> CommandSpec
 injectBuildDirArg buildDir spec =
