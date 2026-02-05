@@ -27,26 +27,39 @@
 	            inherit system;
 	            config.allowUnfree = true;
 	          };
-	          ghcPackageSet = pkgs.haskell.packages.ghc912;
-	          mcpGhcidPkg = self.lib.mkMcpGhcid {
-	            inherit system;
+          ghcPackageSet = pkgs.haskell.packages.ghc912;
+          mcpGhcidPkg = self.lib.mkMcpGhcid {
+            inherit system;
               inherit pkgs;
-	            inherit ghcPackageSet;
-	            ghcid = ghcPackageSet.ghcid;
-	            shell = {
-	              packages = [
-	                pkgs.cabal-install
-	                pkgs.nix
-	                ghcPackageSet.ghc
-	              ];
-	            };
-	          };
-	          mcpHlsPkg = self.lib.mkMcpHls {
-	            inherit system;
+            inherit ghcPackageSet;
+            ghcid = ghcPackageSet.ghcid;
+            shell = {
+              packages = [
+                pkgs.cabal-install
+                pkgs.nix
+                ghcPackageSet.ghc
+              ];
+            };
+          };
+          mcpCabalPkg = self.lib.mkMcpCabal {
+            inherit system;
               inherit pkgs;
-	            inherit ghcPackageSet;
-	            shell = {
-	              packages = [
+            inherit ghcPackageSet;
+            cabal = pkgs.cabal-install;
+            shell = {
+              packages = [
+                pkgs.cabal-install
+                pkgs.nix
+                ghcPackageSet.ghc
+              ];
+            };
+          };
+          mcpHlsPkg = self.lib.mkMcpHls {
+            inherit system;
+              inherit pkgs;
+            inherit ghcPackageSet;
+            shell = {
+              packages = [
 	                pkgs.cabal-install
 	                pkgs.nix
 	                ghcPackageSet.ghc
@@ -55,8 +68,9 @@
 	          };
 	        in
 	        {
-	          codex = codex-nix.packages.${system}.codex;
-	          "mcp-ghcid" = mcpGhcidPkg;
+          codex = codex-nix.packages.${system}.codex;
+          "mcp-ghcid" = mcpGhcidPkg;
+          "mcp-cabal" = mcpCabalPkg;
           "mcp-hls" = mcpHlsPkg;
           default = mcpGhcidPkg;
         }
@@ -258,6 +272,28 @@
               }
             );
 
+          mkMcpCabal = args:
+            let
+              cabalPkg =
+                if builtins.hasAttr "cabal" args then
+                  args.cabal
+                else
+                  null;
+              pathPackages =
+                if cabalPkg == null then
+                  [ ]
+                else
+                  [ cabalPkg ];
+            in
+            mkMcpServer (
+              (builtins.removeAttrs args [ "cabal" ])
+              // {
+                packageName = "mcp-cabal";
+                packageSrc = ./packages/mcp-cabal;
+                pathPackages = pathPackages;
+              }
+            );
+
           # Build only the `mcp-ghcid` executable (no wrapper, no shell logic).
           mkMcpGhcidBinary = args:
             mkMcpServer (
@@ -269,9 +305,20 @@
               }
             );
 
-	          mkMcpHls = args:
-	            let
-	              pkgs =
+          # Build only the `mcp-cabal` executable (no wrapper, no shell logic).
+          mkMcpCabalBinary = args:
+            mkMcpServer (
+              (builtins.removeAttrs args [ "cabal" "shell" "pathPackages" ])
+              // {
+                packageName = "mcp-cabal";
+                packageSrc = ./packages/mcp-cabal;
+                wrap = false;
+              }
+            );
+
+          mkMcpHls = args:
+            let
+              pkgs =
                   if builtins.hasAttr "pkgs" args && args.pkgs != null then
                     args.pkgs
                   else
@@ -330,6 +377,7 @@
                   pkgs.hello
                   codex-nix.packages.${system}.codex
                   self.packages.${system}."mcp-ghcid"
+                  self.packages.${system}."mcp-cabal"
                 ];
                 languages = {
                   haskell = {
@@ -345,6 +393,13 @@
                   rm -rf "$CACHE_ROOT/mcp-ghcid"
                   nix build .#mcp-ghcid -o "$CACHE_ROOT/mcp-ghcid"
                 '';
+                scripts."rebuild-mcp-cabal".exec = ''
+                  set -euo pipefail
+                  CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
+                  mkdir -p "$CACHE_ROOT"
+                  rm -rf "$CACHE_ROOT/mcp-cabal"
+                  nix build .#mcp-cabal -o "$CACHE_ROOT/mcp-cabal"
+                '';
                 scripts."rebuild-mcp-hls".exec = ''
                   set -euo pipefail
                   CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
@@ -356,8 +411,9 @@
                   set -euo pipefail
                   CACHE_ROOT="''${MCP_CACHE_DIR:-''${TMPDIR:-/tmp}/mcp-cache}"
                   mkdir -p "$CACHE_ROOT"
-                  rm -rf "$CACHE_ROOT/mcp-ghcid" "$CACHE_ROOT/mcp-hls"
+                  rm -rf "$CACHE_ROOT/mcp-ghcid" "$CACHE_ROOT/mcp-cabal" "$CACHE_ROOT/mcp-hls"
                   nix build .#mcp-ghcid -o "$CACHE_ROOT/mcp-ghcid"
+                  nix build .#mcp-cabal -o "$CACHE_ROOT/mcp-cabal"
                   nix build .#mcp-hls -o "$CACHE_ROOT/mcp-hls"
                 '';
                 enterShell = ''

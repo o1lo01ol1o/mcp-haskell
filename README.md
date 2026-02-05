@@ -4,10 +4,11 @@ A production-ready implementation of Model Context Protocol (MCP) servers for Ha
 
 ## Overview
 
-This project provides two main MCP servers:
+This project provides three main MCP servers:
 
 - **mcp-hls**: Integration with Haskell Language Server (HLS)
 - **mcp-ghcid**: Integration with GHCID for continuous compilation
+- **mcp-cabal**: Integration with `cabal test` for one-shot test runs
 
 ## Quick Start
 
@@ -113,7 +114,7 @@ nix profile install .#mcp-ghcid
 
 ### Codex / MCP Clients (stdio)
 
-`mcp-ghcid` and `mcp-hls` support both common stdio framings:
+`mcp-ghcid`, `mcp-cabal`, and `mcp-hls` support both common stdio framings:
 
 - `Content-Length: ...\r\n\r\n{...}` (the MCP spec framing)
 - newline-delimited JSON `{...}\n` (used by recent Codex CLI versions for MCP stdio)
@@ -128,7 +129,7 @@ Logging is controlled by a combination of CLI flags and environment variables, a
 - `MCP_LOG_FILE=/path/to/log` (set to `/dev/null` to effectively disable file logging)
 - `MCP_LOG_STDERR=1` to mirror logs to stderr (useful when you want logs surfaced in a parent process like Codex)
 
-This repository’s launch scripts (`scripts/run-mcp-ghcid.sh`, `scripts/run-mcp-hls.sh`) only set `MCP_LOG_FILE` if it is not already set, so downstream wrappers can override it.
+This repository’s launch scripts (`scripts/run-mcp-ghcid.sh`, `scripts/run-mcp-cabal.sh`, `scripts/run-mcp-hls.sh`) only set `MCP_LOG_FILE` if it is not already set, so downstream wrappers can override it.
 
 When running over MCP stdio, logs must not be written to stdout (stdout is reserved for JSON-RPC); use file logging and/or stderr mirroring instead.
 
@@ -283,6 +284,36 @@ Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request)
 
 - **Customize behaviour**: supply a JSON config via `--config path/to/config.json` to override defaults (e.g. `instructionsMessage`, `retentionPolicy`, `maxConcurrentProcesses`). The built-in auto-discovery falls back to the current working directory when no config file is provided.
 
+### mcp-cabal
+
+MCP integration for `cabal test` runs.
+
+**Features:**
+- Start, stop, and monitor cabal test processes
+- Real-time stdout/stderr monitoring with buffered output
+- Default `cabal test` invocations use a per-project `--builddir` under `$TMPDIR/mcp-cache/cabal-test/` (or `MCP_CACHE_DIR`) to avoid `dist-newstyle/` clutter
+
+When wiring `mcp-cabal` into downstream flakes, prefer `shellSpec.fromFlake` or `shellSpec.fromNixExpression` so `cabal test` runs inside the same dev shell as your project toolchain.
+
+**Available MCP Tools:**
+- `cabal-test-start` – Start a cabal test process for a project (optional `target` and `options.args`)
+- `cabal-test-stop` – Stop a running cabal test process
+- `cabal-test-status` – Get status of a cabal test process
+- `cabal-test-messages` – Get output from a cabal test process (supports filtering)
+- `cabal-test-list` – List known cabal test processes
+
+**Cache location and `workDir`**
+
+`cabal-test-start` creates Cabal build directories under a deterministic temp path by default.
+
+- The default `cabal test` command injects `--builddir $TMPDIR/mcp-cache/cabal-test/...` (or `MCP_CACHE_DIR`) and creates that directory.
+- This cache location is independent of `workDir`, which still controls the cabal process working directory.
+- To prevent `mcp-cabal` from creating the default temp build directory, include an explicit `--builddir` in `options.args`.
+
+**Message filtering**
+
+`cabal-test-messages` accepts an optional `filter` object allowing servers or clients to focus on relevant output. Supported filter keys: `grep`, `head`, `tail`, `lines` (exactly one per request). Responses include `"output"` (full text) and `"lines"` (array of individual lines).
+
 ### mcp-hls
 
 MCP integration for Haskell Language Server.
@@ -301,6 +332,7 @@ The project uses a multi-package Cabal structure:
 packages/
 ├── mcp-common/     # Shared MCP protocol types and utilities
 ├── mcp-ghcid/      # GHCID integration
+├── mcp-cabal/      # cabal test integration
 └── mcp-hls/        # HLS integration
 ```
 
@@ -322,6 +354,18 @@ packages/
   mkMcpGhcid :: {
     system :: String,
     ghcid :: Derivation,
+    shell ? {
+      packages ? [ Derivation ],
+      env ? AttrSet,
+      commands ? [ String ]
+    }
+  } -> Derivation
+  ```
+- `lib.mkMcpCabal`: Function to create mcp-cabal (optionally providing cabal-install on PATH)
+  ```nix
+  mkMcpCabal :: {
+    system :: String,
+    cabal ? Derivation,
     shell ? {
       packages ? [ Derivation ],
       env ? AttrSet,
@@ -355,6 +399,22 @@ Create a `flake.nix` in your Haskell project:
       mcp-hls.lib.mkMcpGhcid {
         system = "x86_64-linux";
         ghcid = nixpkgs.legacyPackages.x86_64-linux.haskell.packages.ghc948.ghcid;
+      };
+  };
+}
+```
+
+`mcp-cabal` is wired the same way:
+
+```nix
+{
+  inputs.mcp-hls.url = "github:your-org/mcp-hls";
+
+  outputs = { self, nixpkgs, mcp-hls }: {
+    packages.x86_64-linux.mcp-cabal =
+      mcp-hls.lib.mkMcpCabal {
+        system = "x86_64-linux";
+        cabal = nixpkgs.legacyPackages.x86_64-linux.cabal-install;
       };
   };
 }
